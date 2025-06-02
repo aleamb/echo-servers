@@ -1,0 +1,15 @@
+
+# C/C++ ignore
+*.o
+*.obj
+*.exe
+*.out
+*.a
+*.so
+*.dll
+*.dylib
+*.lib
+*.pdb
+*.idb
+*.ilk
+*.exp
