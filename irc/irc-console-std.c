@@ -1,12 +1,10 @@
 #include <stdio.h>
+#include <string.h>
 #include <errno.h>
 #include <stdlib.h>
 
 #include <unistd.h>
-
-#ifdef EPOLL_H
-#include <sys/epoll.h>
-#endif
+#include <sys/select.h>
 
 
 typedef enum  {
@@ -17,33 +15,31 @@ typedef enum  {
 } BUFFER_TYPE;
 
 typedef struct {
-    struct epoll_event ev;
     char name[64];
+    int fd;
     BUFFER_TYPE buffer_type;
 } BUFFER;
 
-int buffer_create(int epollfd, int fd, BUFFER_TYPE type, BUFFER* buffer) {
-
-    buffer->ev.events = EPOLLIN;
-    buffer->ev.data.fd = fd;
+BUFFER* buffer_create(int fd, const char *name, BUFFER_TYPE type) {
+    BUFFER* buffer = malloc(sizeof(BUFFER));
     buffer->buffer_type = type;
-
-    return epoll_ctl(epollfd, EPOLL_CTL_ADD, STDIN_FILENO, &buffer->ev);
+    buffer->fd = fd;
+    strcpy(buffer->name, name);
+    return buffer;
 }
 
 int buffer_prompt(BUFFER* buffer) {
+
+    printf("%s>", buffer->name);
+
     switch (buffer->buffer_type) {
         case BUFFER_TYPE_GENERAL:
-            printf("General>");
             break;
         case BUFFER_TYPE_CHANNEL:
-            printf("%s> ", buffer->name);
             break;
         case BUFFER_TYPE_QUERY:
-            printf("%s> ", buffer->name);
             break;
         case BUFFER_TYPE_SERVER:
-            printf("%s> ", buffer->name);
             break;
     }
     fflush(stdout);
@@ -52,9 +48,6 @@ int buffer_prompt(BUFFER* buffer) {
 
 BUFFER* buffer_match_fd(int fd, BUFFER *buffers, int buffers_count) {
     for (int i = 0; i < buffers_count; i++) {
-        if (buffers[i].ev.data.fd == fd) {
-            return &buffers[i];
-        }
     }
     return NULL;
 }
@@ -63,11 +56,8 @@ int buffer_process(BUFFER* buffer, const char* input) {
     switch (buffer->buffer_type) {
         case BUFFER_TYPE_GENERAL:
             if (input[0] != '/') {
-                putc('\r', stdout);
-                //putc('\b', stdout);
-                //fflush(stdout);
-                //printf("No message buffer\n");
-                fflush(stdout);
+                printf("\x1b[1;A");
+                printf("No message buffer\n");
             } else {
                 printf("Processing general command: %s\n", input);
             }
@@ -82,57 +72,44 @@ int main() {
     BUFFER buffer;
     BUFFER* active_buffer;
     BUFFER *buffers;
-    int epollfd;
     int buffers_count = 0;
+    fd_set fds;
 
-     epollfd= epoll_create1(0);
-    
-    if (epollfd == -1) {
-        int err = errno;
-        perror("epoll_create1");
-        exit(err);
-    }
+    FD_ZERO(&fds);
 
-    
-    buffers = malloc(sizeof(BUFFER) * 10); // Allocate space for 10 buffers
-    buffer_create(epollfd, STDIN_FILENO, BUFFER_TYPE_GENERAL, &buffers[0]);
-    buffers_count++;
+    buffers = (BUFFER*)malloc(sizeof(BUFFER) * 10);
+
+    active_buffer = buffer_create(STDIN_FILENO, "General", BUFFER_TYPE_GENERAL);
+    FD_SET(STDIN_FILENO, &fds);
+    memcpy(&buffers[buffers_count++], active_buffer, sizeof(BUFFER));
 
     while (!quit) {
-        buffer_prompt(&buffer);
+        buffer_prompt(active_buffer);
 
-        struct epoll_event *events;
-        events = malloc(sizeof(struct epoll_event) * buffers_count);
+        select(buffers_count, &fds, NULL, NULL, NULL);
 
-        int nfds = epoll_wait(epollfd, events, buffers_count, -1);
-        if (nfds == -1) {
-            perror("epoll_wait");
-            exit(1);
-        }
-        for (int n = 0; n < nfds; ++n) {
-            int fd = events[n].data.fd;
-            active_buffer = buffer_match_fd(fd, buffers, buffers_count);
-            if (active_buffer == NULL) {
-                fprintf(stderr, "No buffer found for fd %d\n", fd);
-                continue;
-            }
+        for (int n = 0; n < buffers_count; n++) {
 
-            if (active_buffer->ev.events & EPOLLIN) {
+            int fd = buffers[n].fd;
+
+            if (FD_ISSET(fd, &fds)){
+                
                 char input[256];
                 ssize_t bytes_read = read(fd, input, sizeof(input) - 1);
+                
                 if (bytes_read < 0) {
                     perror("read");
                     continue;
                 } else if (bytes_read == 0) {
-                    // EOF, close the buffer
-                    epoll_ctl(epollfd, EPOLL_CTL_DEL, fd, NULL);
-                    continue;
+                    printf("EOF on fd %d\n", fd);
+                    quit = 1;
+                    break;
                 }
-                input[bytes_read] = '\0'; // Null-terminate the string
+
                 buffer_process(active_buffer, input);
             }
         }
-        free(events);
+       
     }
 
 
