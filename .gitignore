@@ -13,3 +13,4 @@
 *.idb
 *.ilk
 *.exp
+build/
