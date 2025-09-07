@@ -1,8 +1,8 @@
 
 #include <stdio.h>
 #include <winsock2.h>
+#include <stdlib.h>
 
-#define PORT 7777
 #define DATA_BUFSIZE 1024
 
 #pragma comment(lib, "ws2_32.lib")
@@ -29,10 +29,10 @@ typedef struct
 
 DWORD WINAPI ServerWorkerThread(LPVOID);
 
-void PrintError(DWORD, const char *, ...);
-void ErrorExit(DWORD, const char *, ...);
+void PrintWinError(DWORD, const char *, ...);
+void WinErrorExit(DWORD, const char *, ...);
 
-int main()
+int main(int argc, char* argv[])
 {
     WSADATA wsaData;
     HANDLE completionPort;
@@ -41,12 +41,26 @@ int main()
     SOCKET listenSocket;
     CLIENTS_STATS *clientsStats;
     DWORD dw;
+    INT port;
+
+    if (argc < 2)
+    {
+        printf("Usage: %s <port>\n", argv[0]);
+        exit(1);
+    }
+
+    port = atoi(argv[1]);
+
+    if (port <= 0) {
+        puts("Invalid port number.\n");
+        exit(2);
+    }
 
     // initialize Winsock
     int result = WSAStartup(MAKEWORD(2, 2), &wsaData);
     if (result != 0)
     {
-        ErrorExit(GetLastError(), "Error initializing Winsock");
+        WinErrorExit(GetLastError(), "Error initializing Winsock.\n");
     }
 
     // creating completion port
@@ -56,7 +70,7 @@ int main()
         dw = GetLastError();
         WSACleanup();
         CloseHandle(completionPort);
-        ErrorExit(dw, "Error creating completion port");
+        WinErrorExit(dw, "Error creating completion port.\n");
     }
 
     // Create socket with overlapped I/O enabled.
@@ -67,13 +81,13 @@ int main()
         dw = GetLastError();
         WSACleanup();
         CloseHandle(completionPort);
-        ErrorExit(dw, "Error creating server socket.");
+        WinErrorExit(dw, "Error creating server socket.\n");
     }
 
     // bind and set listening
     internetAddr.sin_family = AF_INET;
     internetAddr.sin_addr.s_addr = htonl(INADDR_ANY);
-    internetAddr.sin_port = htons(PORT);
+    internetAddr.sin_port = htons((USHORT)port);
 
     // set SO_REUSEADDR option to allow reuse of the address
     BOOL bOptVal = TRUE;
@@ -86,7 +100,7 @@ int main()
         dw = GetLastError();
         closesocket(listenSocket);
         WSACleanup();
-        ErrorExit(dw, "Error binding server socket.");
+        WinErrorExit(dw, "Error binding server socket.\n");
     }
 
     result = listen(listenSocket, SOMAXCONN);
@@ -95,7 +109,7 @@ int main()
         dw = GetLastError();
         closesocket(listenSocket);
         WSACleanup();
-        ErrorExit(dw, "Error listening on server socket.");
+        WinErrorExit(dw, "Error listening on server socket.\n");
     }
 
     // Determine how many processors are on the system
@@ -111,7 +125,7 @@ int main()
             dw = GetLastError();
             WSACleanup();
             CloseHandle(completionPort);
-            ErrorExit(dw, "Error creating worker thread %d", i);
+            WinErrorExit(dw, "Error creating worker thread %d\n", i);
         }
     }
 
@@ -129,7 +143,7 @@ int main()
 
         if (acceptSocket == INVALID_SOCKET)
         {
-            PrintError(GetLastError(), "Error accepting connection.");
+            PrintWinError(GetLastError(), "Error accepting connection.\n");
         }
         else
         {
@@ -148,7 +162,7 @@ int main()
 
             if (CreateIoCompletionPort((HANDLE)acceptSocket, completionPort, (ULONG_PTR)handleData, 0) == NULL)
             {
-                PrintError(GetLastError(), "Error assign completion port to socket.");
+                PrintWinError(GetLastError(), "Error assign completion port to socket.\n");
                 closesocket(acceptSocket);
                 GlobalFree(handleData);
             }
@@ -167,7 +181,7 @@ int main()
                     dw = WSAGetLastError();
                     if (dw != WSA_IO_PENDING)
                     {
-                        PrintError(dw, "Error assign completion port to socket.");
+                        PrintWinError(dw, "Error assign completion port to socket.\n");
                         closesocket(acceptSocket);
                         GlobalFree(handleData);
                         GlobalFree(perIoData);
@@ -235,14 +249,14 @@ void vPrintError(DWORD dw, const char *pMainErrorMsg, va_list args)
 
     vfprintf(stderr, pMainErrorMsg, args);
 
-    if (FormatMessage(
+    if (dw < 10 && FormatMessage(
             FORMAT_MESSAGE_ALLOCATE_BUFFER | FORMAT_MESSAGE_FROM_SYSTEM,
             NULL,
             dw,
             MAKELANGID(LANG_NEUTRAL, SUBLANG_DEFAULT),
             (LPTSTR)&lpMsgBuf, 0, NULL) != 0)
     {
-        fprintf(stderr, "%s (Error code: %d) -> %s", pMainErrorMsg, (int)dw, (LPCTSTR)lpMsgBuf);
+        fprintf(stderr, "%s (Error code: %d) -> %s\n", pMainErrorMsg, (int)dw, (LPCTSTR)lpMsgBuf);
         LocalFree(lpMsgBuf);
     }
     else
@@ -251,7 +265,7 @@ void vPrintError(DWORD dw, const char *pMainErrorMsg, va_list args)
     }
 }
 
-void PrintError(DWORD dw, const char *pMainErrorMsg, ...)
+void PrintWinError(DWORD dw, const char *pMainErrorMsg, ...)
 {
     va_list args;
     va_start(args, pMainErrorMsg);
@@ -259,7 +273,7 @@ void PrintError(DWORD dw, const char *pMainErrorMsg, ...)
     va_end(args);
 }
 
-void ErrorExit(DWORD dw, const char *pMainErrorMsg, ...)
+void WinErrorExit(DWORD dw, const char *pMainErrorMsg, ...)
 {
     va_list args;
     va_start(args, pMainErrorMsg);
