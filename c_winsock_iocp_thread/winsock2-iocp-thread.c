@@ -249,7 +249,7 @@ void vPrintError(DWORD dw, const char *pMainErrorMsg, va_list args)
 
     vfprintf(stderr, pMainErrorMsg, args);
 
-    if (dw < 10 && FormatMessage(
+    if (FormatMessage(
             FORMAT_MESSAGE_ALLOCATE_BUFFER | FORMAT_MESSAGE_FROM_SYSTEM,
             NULL,
             dw,
