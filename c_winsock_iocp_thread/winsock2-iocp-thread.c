@@ -1,11 +1,30 @@
 
+/*
+
+    winsock2-iocp-thread.c
+
+    This is a simple echo server using Winsock2 API with IOCP and worker threads.
+    
+    Based on example from book Network Programming for Microsoft Windows, 2ed, by Anthony Jones and Jim Ohlund
+
+    author: Alejandro AMbroa (jandroz@gmail.com)
+
+    To compile (using Visual Studio command prompt):
+    cl /W4 /D_CRT_SECURE_NO_WARNINGS winsock2-iocp-thread.c /link ws2_32.lib
+
+    or with mingw:
+    gcc -Wall -o winsock2-iocp-thread.exe winsock2-iocp-thread.c -lws2_32
+
+    Tested with Visual Studio 2022, Windows 11.
+
+*/
+
 #include <stdio.h>
-#include <winsock2.h>
 #include <stdlib.h>
+#include <winsock2.h>
+#include <ws2tcpip.h>
 
 #define DATA_BUFSIZE 1024
-
-#pragma comment(lib, "ws2_32.lib")
 
 typedef struct
 {
@@ -18,6 +37,7 @@ typedef struct _PER_HANDLE_DATA
     SOCKET socket;
     SOCKADDR_IN clientAddr;
     CLIENTS_STATS *clientsStats;
+    CHAR address_str[INET6_ADDRSTRLEN];
 } PER_HANDLE_DATA, *LPPER_HANDLE_DATA;
 
 typedef struct
@@ -27,10 +47,15 @@ typedef struct
     WSABUF wsaBuf;
 } PER_IO_DATA, *LPPER_IO_DATA;
 
+
+CRITICAL_SECTION CriticalSection;
+
 DWORD WINAPI ServerWorkerThread(LPVOID);
 
 void PrintWinError(DWORD, const char *, ...);
 void WinErrorExit(DWORD, const char *, ...);
+void NotifyClientClosed(LPPER_HANDLE_DATA);
+
 
 int main(int argc, char* argv[])
 {
@@ -40,8 +65,8 @@ int main(int argc, char* argv[])
     SOCKADDR_IN internetAddr;
     SOCKET listenSocket;
     CLIENTS_STATS *clientsStats;
-    DWORD dw;
     INT port;
+    DWORD dw; // store error code
 
     if (argc < 2)
     {
@@ -54,6 +79,12 @@ int main(int argc, char* argv[])
     if (port <= 0) {
         puts("Invalid port number.\n");
         exit(2);
+    }
+
+    // This critical section is used to protect access to the clientsStats structure and avoid logs merging.
+    if (!InitializeCriticalSectionAndSpinCount(&CriticalSection, 0x00000400)) {
+
+        WinErrorExit(GetLastError(), "Error initializing critical section.\n");
     }
 
     // initialize Winsock
@@ -74,7 +105,7 @@ int main(int argc, char* argv[])
     }
 
     // Create socket with overlapped I/O enabled.
-    listenSocket = WSASocket(AF_INET, SOCK_STREAM, IPPROTO_TCP, NULL, 0, WSA_FLAG_OVERLAPPED);
+    listenSocket = WSASocketW(AF_INET, SOCK_STREAM, IPPROTO_TCP, NULL, 0, WSA_FLAG_OVERLAPPED);
 
     if (listenSocket == INVALID_SOCKET)
     {
@@ -112,11 +143,13 @@ int main(int argc, char* argv[])
         WinErrorExit(dw, "Error listening on server socket.\n");
     }
 
+    printf("Server listening on port %d\n", port);
+
     // Determine how many processors are on the system
     GetSystemInfo(&systemInfo);
 
     // create the worker threads. One for each processor.
-    for (int i = 0; i < systemInfo.dwNumberOfProcessors; i++)
+    for (DWORD i = 0; i < systemInfo.dwNumberOfProcessors; i++)
     {
         HANDLE threadHandle;
         threadHandle = CreateThread(NULL, 0, ServerWorkerThread, completionPort, 0, NULL);
@@ -128,6 +161,8 @@ int main(int argc, char* argv[])
             WinErrorExit(dw, "Error creating worker thread %d\n", i);
         }
     }
+    
+    printf("Created %d worker threads.\n", systemInfo.dwNumberOfProcessors);
 
     // stats
     clientsStats = (CLIENTS_STATS *)GlobalAlloc(GPTR, sizeof(CLIENTS_STATS));
@@ -152,13 +187,11 @@ int main(int argc, char* argv[])
             DWORD recvBytes;
             LPPER_IO_DATA perIoData;
 
-            printf("Accepting connection %d from %s:%d\n", (int)++clientsStats->nClients,
-                   inet_ntoa(saRemote.sin_addr), ntohs(saRemote.sin_port));
-
             handleData = (LPPER_HANDLE_DATA)GlobalAlloc(GPTR, sizeof(PER_HANDLE_DATA));
             handleData->socket = acceptSocket;
             handleData->clientsStats = clientsStats;
             CopyMemory(&handleData->clientAddr, &saRemote, remoteLen);
+            inet_ntop(AF_INET, &saRemote.sin_addr, handleData->address_str, INET6_ADDRSTRLEN);
 
             if (CreateIoCompletionPort((HANDLE)acceptSocket, completionPort, (ULONG_PTR)handleData, 0) == NULL)
             {
@@ -173,6 +206,8 @@ int main(int argc, char* argv[])
                 perIoData->wsaBuf.len = DATA_BUFSIZE;
                 perIoData->wsaBuf.buf = perIoData->buffer;
                 wsaRecvFlags = 0;
+
+                printf("Accepting connection from %s:%d. Clients: %d\n", handleData->address_str, ntohs(saRemote.sin_port), (int)(++clientsStats->nClients));
 
                 result = WSARecv(handleData->socket, &(perIoData->wsaBuf), 1, (LPDWORD)&recvBytes, (LPDWORD)&wsaRecvFlags, &(perIoData->overlapped), NULL);
 
@@ -194,6 +229,7 @@ int main(int argc, char* argv[])
     closesocket(listenSocket);
     GlobalFree(clientsStats);
     WSACleanup();
+    DeleteCriticalSection(&CriticalSection);
     return 0;
 }
 
@@ -214,10 +250,8 @@ DWORD WINAPI ServerWorkerThread(LPVOID pCompletionPortID)
 
         if (bytesTransferred == 0)
         {
-            printf("Closing connection %d from %s:%d\n", (int)handleData->clientsStats->nClients,
-                   inet_ntoa(handleData->clientAddr.sin_addr), ntohs(handleData->clientAddr.sin_port));
+            NotifyClientClosed(handleData);
             closesocket(handleData->socket);
-            handleData->clientsStats->nClients--;
             GlobalFree(handleData);
             GlobalFree(perIoData);
         }
@@ -242,6 +276,14 @@ DWORD WINAPI ServerWorkerThread(LPVOID pCompletionPortID)
 }
 
 //
+
+void NotifyClientClosed(LPPER_HANDLE_DATA handleData) 
+{
+    EnterCriticalSection(&CriticalSection); 
+    handleData->clientsStats->nClients--;
+    printf("Closing connection from %s. Clients: %d\n", handleData->address_str, handleData->clientsStats->nClients);
+    LeaveCriticalSection(&CriticalSection);   
+}
 
 void vPrintError(DWORD dw, const char *pMainErrorMsg, va_list args)
 {
@@ -281,3 +323,5 @@ void WinErrorExit(DWORD dw, const char *pMainErrorMsg, ...)
     va_end(args);
     ExitProcess(dw);
 }
+
+
