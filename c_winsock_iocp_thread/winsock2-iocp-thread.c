@@ -1,4 +1,3 @@
-
 /*
 
     winsock2-iocp-thread.c
@@ -7,7 +6,7 @@
     
     Based on example from book Network Programming for Microsoft Windows, 2ed, by Anthony Jones and Jim Ohlund
 
-    author: Alejandro AMbroa (jandroz@gmail.com)
+    author: Alejandro Ambroa (jandroz@gmail.com)
 
     To compile (using Visual Studio command prompt):
     cl /W4 /D_CRT_SECURE_NO_WARNINGS winsock2-iocp-thread.c /link ws2_32.lib
@@ -15,7 +14,7 @@
     or with mingw:
     gcc -Wall -o winsock2-iocp-thread.exe winsock2-iocp-thread.c -lws2_32
 
-    Tested with Visual Studio 2022, Windows 11.
+    Tested with Visual Studio 2022 and mingw64, Windows 11.
 
 */
 
@@ -298,7 +297,7 @@ void vPrintError(DWORD dw, const char *pMainErrorMsg, va_list args)
             MAKELANGID(LANG_NEUTRAL, SUBLANG_DEFAULT),
             (LPTSTR)&lpMsgBuf, 0, NULL) != 0)
     {
-        fprintf(stderr, "%s (Error code: %d) -> %s\n", pMainErrorMsg, (int)dw, (LPCTSTR)lpMsgBuf);
+        fprintf(stderr, "%s Error code: %d -> %s\n", pMainErrorMsg, (int)dw, (LPCTSTR)lpMsgBuf);
         LocalFree(lpMsgBuf);
     }
     else
