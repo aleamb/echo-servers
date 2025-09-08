@@ -10,7 +10,7 @@ Based on example from book *Network Programming for Microsoft Windows, 2ed, by A
 
 ```
 
-cl /W4 /D_CRT_SECURE_NO_WARNINGS winsock2-iocp-thread.c /link ws2_32.lib
+cl /W4 winsock2-iocp-thread.c /link ws2_32.lib
 
 ```
 

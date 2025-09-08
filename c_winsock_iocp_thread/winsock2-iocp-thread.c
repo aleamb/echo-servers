@@ -9,7 +9,7 @@
     author: Alejandro Ambroa (jandroz@gmail.com)
 
     To compile (using Visual Studio command prompt):
-    cl /W4 /D_CRT_SECURE_NO_WARNINGS winsock2-iocp-thread.c /link ws2_32.lib
+    cl /W4 winsock2-iocp-thread.c /link ws2_32.lib
 
     or with mingw:
     gcc -Wall -o winsock2-iocp-thread.exe winsock2-iocp-thread.c -lws2_32
