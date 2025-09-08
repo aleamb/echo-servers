@@ -27,7 +27,7 @@
 
 typedef struct
 {
-    DWORD nClients;
+    WORD nClients;
 
 } CLIENTS_STATS, *LPCLIENTS_STATS;
 
@@ -161,7 +161,7 @@ int main(int argc, char* argv[])
         }
     }
     
-    printf("Created %d worker threads.\n", systemInfo.dwNumberOfProcessors);
+    printf("Created %ld worker threads.\n", systemInfo.dwNumberOfProcessors);
 
     // stats
     clientsStats = (CLIENTS_STATS *)GlobalAlloc(GPTR, sizeof(CLIENTS_STATS));
