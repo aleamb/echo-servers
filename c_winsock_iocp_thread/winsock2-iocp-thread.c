@@ -24,7 +24,7 @@
 #include <ws2tcpip.h>
 
 #define DATA_BUFSIZE 1024
-#define MAX_DEBUG_MSG_SIZE_TO_PRINT 512
+#define MAX_DEBUG_MSG_SIZE_TO_PRINT 128
 
 typedef struct
 {
@@ -271,7 +271,7 @@ DWORD WINAPI ServerWorkerThread(LPVOID pCompletionPortID)
             fflush(stdout);
             perIoData->wsaBuf.buf[bytesToPrint] = tmp_byte;
             #endif
-            
+
             perIoData->wsaBuf.len = bytesTransferred;
             WSASend(handleData->socket, &(perIoData->wsaBuf), 1, NULL, 0, NULL, NULL);
 
