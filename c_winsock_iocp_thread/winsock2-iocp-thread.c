@@ -43,8 +43,8 @@ typedef struct _PER_HANDLE_DATA
 typedef struct
 {
     OVERLAPPED overlapped;
-    char buffer[DATA_BUFSIZE];
     WSABUF wsaBuf;
+    char buffer[DATA_BUFSIZE];
 } PER_IO_DATA, *LPPER_IO_DATA;
 
 
@@ -203,6 +203,7 @@ int main(int argc, char* argv[])
             {
                 perIoData = (LPPER_IO_DATA)GlobalAlloc(GPTR, sizeof(PER_IO_DATA));
                 ZeroMemory(&(perIoData->overlapped), sizeof(OVERLAPPED));
+                ZeroMemory(&(perIoData->buffer), sizeof(DATA_BUFSIZE));
                 perIoData->wsaBuf.len = DATA_BUFSIZE;
                 perIoData->wsaBuf.buf = perIoData->buffer;
                 wsaRecvFlags = 0;
@@ -262,19 +263,20 @@ DWORD WINAPI ServerWorkerThread(LPVOID pCompletionPortID)
         else
         {
             #ifdef _DEBUG
+            char tmp_byte;
             bytesToPrint = bytesTransferred > MAX_DEBUG_MSG_SIZE_TO_PRINT ?  MAX_DEBUG_MSG_SIZE_TO_PRINT : bytesTransferred;
+            tmp_byte = perIoData->wsaBuf.buf[bytesToPrint];
             perIoData->wsaBuf.buf[bytesToPrint] = '\0';
-            printf("Received %d bytes from %s. Data received (truncated): %s", bytesTransferred, handleData->address_str, perIoData->wsaBuf.buf);
-            puts(perIoData->wsaBuf.buf);
+            printf("Received %d bytes from %s. Data received (truncated): %s\n", bytesTransferred, handleData->address_str, perIoData->wsaBuf.buf);
             fflush(stdout);
+            perIoData->wsaBuf.buf[bytesToPrint] = tmp_byte;
             #endif
-
+            
+            perIoData->wsaBuf.len = bytesTransferred;
             WSASend(handleData->socket, &(perIoData->wsaBuf), 1, NULL, 0, NULL, NULL);
 
             ZeroMemory(&(perIoData->overlapped), sizeof(OVERLAPPED));
             ZeroMemory(perIoData->buffer, DATA_BUFSIZE);
-            perIoData->wsaBuf.len = DATA_BUFSIZE;
-            perIoData->wsaBuf.buf = perIoData->buffer;
             flags = 0;
 
             WSARecv(handleData->socket, &(perIoData->wsaBuf), 1, NULL, &flags, &(perIoData->overlapped), NULL);
