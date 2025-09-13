@@ -24,6 +24,7 @@
 #include <ws2tcpip.h>
 
 #define DATA_BUFSIZE 1024
+#define MAX_DEBUG_MSG_SIZE_TO_PRINT 512
 
 typedef struct
 {
@@ -240,6 +241,10 @@ DWORD WINAPI ServerWorkerThread(LPVOID pCompletionPortID)
     LPPER_HANDLE_DATA handleData;
     DWORD flags;
 
+    #ifdef _DEBUG
+    DWORD bytesToPrint;
+    #endif
+
     while (GetQueuedCompletionStatus(completionPort,
                                      &bytesTransferred,
                                      (PULONG_PTR)&handleData,
@@ -256,8 +261,13 @@ DWORD WINAPI ServerWorkerThread(LPVOID pCompletionPortID)
         }
         else
         {
-
-            perIoData->wsaBuf.buf[bytesTransferred] = '\0';
+            #ifdef _DEBUG
+            bytesToPrint = bytesTransferred > MAX_DEBUG_MSG_SIZE_TO_PRINT ?  MAX_DEBUG_MSG_SIZE_TO_PRINT : bytesTransferred;
+            perIoData->wsaBuf.buf[bytesToPrint] = '\0';
+            printf("Received %d bytes from %s. Data received (truncated): %s", bytesTransferred, handleData->address_str, perIoData->wsaBuf.buf);
+            puts(perIoData->wsaBuf.buf);
+            fflush(stdout);
+            #endif
 
             WSASend(handleData->socket, &(perIoData->wsaBuf), 1, NULL, 0, NULL, NULL);
 
