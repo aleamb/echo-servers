@@ -23,289 +23,49 @@
 #include <winsock2.h>
 #include <ws2tcpip.h>
 
-#define PROGRAM_NAME "winsock2-iocp-thread"
+#define PROGRAM_VERSION "echo-servers/c_winsock_iocp_thread v1.0.0"
 #define DATA_BUFSIZE 1024
 #define MAX_DEBUG_MSG_SIZE_TO_PRINT 128
-
+#define CLIENT_NO_ERROR 0
+#define MAX_WORKERS 1
 
 typedef struct
-{
-    WORD nClients;
-
-} CLIENTS_STATS, *LPCLIENTS_STATS;
-
-typedef struct _PER_HANDLE_DATA
 {
     SOCKET socket;
-    USHORT port;
     SOCKADDR_IN clientAddr;
-    CLIENTS_STATS *clientsStats;
-    CHAR address_str[INET6_ADDRSTRLEN];
-    
-} PER_HANDLE_DATA, *LPPER_HANDLE_DATA;
+
+    OVERLAPPED overlapped;
+    WSABUF wsaBuf;
+    char *buffer;
+
+} CLIENT_INFO, *LPCLIENT_INFO;
 
 typedef struct
 {
-    OVERLAPPED overlapped;
-    WSABUF wsaBuf;
-    char buffer[DATA_BUFSIZE];
-} PER_IO_DATA, *LPPER_IO_DATA;
+    DWORD nClients;
+    CLIENT_INFO *clients;
+    SOCKET listenSocket;
+    CRITICAL_SECTION criticalSection;
+    HANDLE completionPort;
+
+} SERVER_INFO, *LPSERVER_INFO;
+
+typedef struct 
+{
+    HANDLE threadHandle;
+    SERVER_INFO *serverInfo;
+
+} WORKER_DATA, *LPWORKER_DATA;
 
 
-CRITICAL_SECTION CriticalSection;
-
-void Usage();
+void Usage(const char*);
 void PrintWindowsErrorCode(DWORD errorCode, const char *);
 void PrintWindowsError(const char *);
 DWORD WINAPI ServerWorkerThread(LPVOID);
 
 
-void NotifyClientClosed(LPPER_HANDLE_DATA);
-
-
-int main(int argc, char* argv[])
-{
-    WSADATA wsaData;
-    HANDLE completionPort;
-    SYSTEM_INFO systemInfo;
-    SOCKADDR_IN internetAddr;
-    SOCKET listenSocket;
-    CLIENTS_STATS *clientsStats;
-    INT port;
-    DWORD dw; // store error code
-
-    if (argc < 2)
-    {
-        Usage();
-        ExitProcess(1);
-    }
-
-    port = atoi(argv[1]);
-
-    if (port <= 0) {
-        puts("Invalid port number");
-        ExitProcess(1);
-    }
-
-    // This critical section is used to protect access to the clientsStats structure and avoid to merge log messages.
-    InitializeCriticalSection(&CriticalSection);
-
-    // initialize Winsock
-    int result = WSAStartup(MAKEWORD(2, 2), &wsaData);
-    if (result != 0)
-    {
-        PrintWindowsErrorCode(result, "Error initializing Winsock");
-        ExitProcess(1);
-    }
-
-    // creating completion port
-    completionPort = CreateIoCompletionPort(INVALID_HANDLE_VALUE, NULL, 0, 0);
-    if (completionPort == NULL)
-    {
-        PrintWindowsError("Error creating completion port");
-        WSACleanup();
-        CloseHandle(completionPort);
-        ExitProcess(1);
-    }
-
-    // Create socket with overlapped I/O enabled.
-    listenSocket = WSASocketW(AF_INET, SOCK_STREAM, IPPROTO_TCP, NULL, 0, WSA_FLAG_OVERLAPPED);
-
-    if (listenSocket == INVALID_SOCKET)
-    {
-        PrintWindowsError("Error creating server socket");
-        WSACleanup();
-        CloseHandle(completionPort);
-        ExitProcess(1);
-    }
-
-    // bind and set listening
-    internetAddr.sin_family = AF_INET;
-    internetAddr.sin_addr.s_addr = htonl(INADDR_ANY);
-    internetAddr.sin_port = htons((USHORT)port);
-
-    // set SO_REUSEADDR option to allow reuse of the address
-    BOOL bOptVal = TRUE;
-    int bOptLen = sizeof(BOOL);
-    setsockopt(listenSocket, SOL_SOCKET, SO_REUSEADDR, (char *)&bOptVal, bOptLen);
-
-    result = bind(listenSocket, (SOCKADDR *)&internetAddr, sizeof(SOCKADDR));
-    if (result == SOCKET_ERROR)
-    {
-        PrintWindowsError("Error binding server socket");
-        closesocket(listenSocket);
-        WSACleanup();
-        ExitProcess(1);
-    }
-
-    result = listen(listenSocket, SOMAXCONN);
-    if (result == SOCKET_ERROR)
-    {
-        PrintWindowsError("Error listening on server socket");
-        closesocket(listenSocket);
-        WSACleanup();    
-        ExitProcess(1);
-    }
-
-    printf("Server listening on port %d\n", port);
-
-    // Determine how many processors are on the system
-    GetSystemInfo(&systemInfo);
-
-    // create the worker threads. One for each processor.
-    for (DWORD i = 0; i < systemInfo.dwNumberOfProcessors; i++)
-    {
-        HANDLE threadHandle;
-        threadHandle = CreateThread(NULL, 0, ServerWorkerThread, completionPort, 0, NULL);
-        if (threadHandle == NULL)
-        {
-            PrintWindowsError("Error creating worker thread");
-            WSACleanup();
-            CloseHandle(completionPort);
-            ExitProcess(1);
-        }
-    }
-    
-    printf("Created %ld worker threads.\n", systemInfo.dwNumberOfProcessors);
-
-    // stats
-    clientsStats = (CLIENTS_STATS *)GlobalAlloc(GPTR, sizeof(CLIENTS_STATS));
-    clientsStats->nClients = 0;
-
-    while (TRUE)
-    {
-        SOCKADDR_IN saRemote;
-        SOCKET acceptSocket;
-        int remoteLen = sizeof(saRemote);
-
-        acceptSocket = WSAAccept(listenSocket, (SOCKADDR *)&saRemote, &remoteLen, NULL, (DWORD_PTR)NULL);
-
-        if (acceptSocket == INVALID_SOCKET)
-        {
-            PrintWindowsError("Error accepting connection");
-        }
-        else
-        {
-            DWORD wsaRecvFlags;
-            LPPER_HANDLE_DATA handleData;
-            DWORD recvBytes;
-            LPPER_IO_DATA perIoData;
-
-            handleData = (LPPER_HANDLE_DATA)GlobalAlloc(GPTR, sizeof(PER_HANDLE_DATA));
-            handleData->socket = acceptSocket;
-            handleData->clientsStats = clientsStats;
-            CopyMemory(&handleData->clientAddr, &saRemote, remoteLen);
-            inet_ntop(AF_INET, &saRemote.sin_addr, handleData->address_str, INET6_ADDRSTRLEN);
-
-            printf("Accepting connection from %s:%d. Clients: %d\n", handleData->address_str, ntohs(saRemote.sin_port), (int)(++clientsStats->nClients));
-
-            if (CreateIoCompletionPort((HANDLE)acceptSocket, completionPort, (ULONG_PTR)handleData, 0) == NULL)
-            {
-                PrintWindowsError("Error assign completion port to socket");
-                closesocket(acceptSocket);
-                GlobalFree(handleData);
-            }
-            else
-            {
-                perIoData = (LPPER_IO_DATA)GlobalAlloc(GPTR, sizeof(PER_IO_DATA));
-                ZeroMemory(&(perIoData->overlapped), sizeof(OVERLAPPED));
-                ZeroMemory(&(perIoData->buffer), sizeof(DATA_BUFSIZE));
-                perIoData->wsaBuf.len = DATA_BUFSIZE;
-                perIoData->wsaBuf.buf = perIoData->buffer;
-                wsaRecvFlags = 0;
-                
-                result = WSARecv(handleData->socket, &(perIoData->wsaBuf), 1, (LPDWORD)&recvBytes, (LPDWORD)&wsaRecvFlags, &(perIoData->overlapped), NULL);
-
-                if (result == SOCKET_ERROR)
-                {
-                    dw = WSAGetLastError();
-                    if (dw != WSA_IO_PENDING)
-                    {
-                        fprintf(stderr, "Error preparing receiving of data from %s. Error: %d. Closing socket.\n", handleData->address_str, dw);
-                        closesocket(handleData->socket);
-                        GlobalFree(handleData);
-                        GlobalFree(perIoData);
-                    }
-                }
-            }
-        }
-    }
-
-    closesocket(listenSocket);
-    GlobalFree(clientsStats);
-    WSACleanup();
-    DeleteCriticalSection(&CriticalSection);
-    return 0;
-}
-
-DWORD WINAPI ServerWorkerThread(LPVOID pCompletionPortID)
-{
-    HANDLE completionPort = (HANDLE)pCompletionPortID;
-    DWORD bytesTransferred;
-    LPPER_IO_DATA perIoData;
-    LPPER_HANDLE_DATA handleData;
-    DWORD flags;
-
-    while (GetQueuedCompletionStatus(completionPort,
-                                     &bytesTransferred,
-                                     (PULONG_PTR)&handleData,
-                                     (LPOVERLAPPED *)&perIoData,
-                                     INFINITE))
-    {
-
-        if (bytesTransferred == 0)
-        {
-            NotifyClientClosed(handleData);
-            closesocket(handleData->socket);
-            GlobalFree(handleData);
-            GlobalFree(perIoData);
-        }
-        else
-        {
-            #ifdef _DEBUG
-            DWORD bytesToPrint;
-            char tmp_byte;
-            bytesToPrint = bytesTransferred > MAX_DEBUG_MSG_SIZE_TO_PRINT ?  MAX_DEBUG_MSG_SIZE_TO_PRINT : bytesTransferred;
-            tmp_byte = perIoData->wsaBuf.buf[bytesToPrint];
-            perIoData->wsaBuf.buf[bytesToPrint] = '\0';
-            printf("Received %d bytes from %s. Data received (truncated): %s\n", bytesTransferred, handleData->address_str, perIoData->wsaBuf.buf);
-            fflush(stdout);
-            perIoData->wsaBuf.buf[bytesToPrint] = tmp_byte;
-            #endif
-
-            perIoData->wsaBuf.len = bytesTransferred;
-            WSASend(handleData->socket, &(perIoData->wsaBuf), 1, NULL, 0, NULL, NULL);
-
-            ZeroMemory(&(perIoData->overlapped), sizeof(OVERLAPPED));
-            ZeroMemory(perIoData->buffer, DATA_BUFSIZE);
-            flags = 0;
-
-            WSARecv(handleData->socket, &(perIoData->wsaBuf), 1, NULL, &flags, &(perIoData->overlapped), NULL);
-        }
-    }
-
-    return 0;
-}
-
-//
-
-void Usage() {
-    printf("Usage: %s <port>\n", PROGRAM_NAME);
-}
-
-void NotifyClientClosed(LPPER_HANDLE_DATA handleData) 
-{
-    EnterCriticalSection(&CriticalSection);
-
-    handleData->clientsStats->nClients--;
-    printf("Closing connection from %s. Clients: %d\n", handleData->address_str, handleData->clientsStats->nClients);
-
-    LeaveCriticalSection(&CriticalSection);   
-}
-
-void PrintWindowsError(const char *pMainErrorMsg)
-{
-    PrintWindowsErrorCode(GetLastError(), pMainErrorMsg);
+void Usage(const char* programName) {
+    printf("%s\nUsage: %s <port>\n", PROGRAM_VERSION, programName);
 }
 
 void PrintWindowsErrorCode(DWORD errorCode, const char *pMainErrorMsg)
@@ -326,4 +86,294 @@ void PrintWindowsErrorCode(DWORD errorCode, const char *pMainErrorMsg)
     {
         fprintf(stderr, "%s. Error code: %ld\n", pMainErrorMsg, errorCode);
     }
+}
+
+void PrintWindowsError(const char *pMainErrorMsg)
+{
+    PrintWindowsErrorCode(GetLastError(), pMainErrorMsg);
+}
+
+
+void CloseClient(LPCLIENT_INFO clientInfo, LPSERVER_INFO serverInfo)
+{
+    EnterCriticalSection(&serverInfo->criticalSection);
+    serverInfo->nClients--;
+    LeaveCriticalSection(&serverInfo->criticalSection);
+    closesocket(clientInfo->socket);
+    GlobalFree(clientInfo->buffer);
+    GlobalFree(clientInfo);   
+}
+
+LPCLIENT_INFO RegisterClient(LPSERVER_INFO serverInfo, SOCKET clientSocket, LPSOCKADDR_IN remoteClientAddrInfo, int remoteLen)
+{
+
+    LPCLIENT_INFO clientInfo;
+    EnterCriticalSection(&serverInfo->criticalSection);
+    serverInfo->nClients++;
+    LeaveCriticalSection(&serverInfo->criticalSection);
+    
+    clientInfo = (LPCLIENT_INFO)GlobalAlloc(GPTR, sizeof(CLIENT_INFO));
+    clientInfo->socket = clientSocket;
+    ZeroMemory(&(clientInfo->overlapped), sizeof(OVERLAPPED));
+    ZeroMemory(&(clientInfo->buffer), sizeof(DATA_BUFSIZE));
+    clientInfo->wsaBuf.len = DATA_BUFSIZE;
+    clientInfo->wsaBuf.buf = clientInfo->buffer;
+
+    CopyMemory(&clientInfo->clientAddr, remoteClientAddrInfo, remoteLen);
+
+    return clientInfo;
+}
+
+int CheckOverlappedSocketOperation(DWORD wsaOpResult) {
+    if (wsaOpResult == SOCKET_ERROR)
+    {
+        int lastError = WSAGetLastError();
+        if (lastError != WSA_IO_PENDING)
+        {
+            PrintWindowsErrorCode(lastError, "Error in overlapped socket operation");
+            return lastError;
+        }
+    }
+    return CLIENT_NO_ERROR;
+}
+
+
+DWORD WINAPI ServerWorkerThread(LPVOID pParameter)
+{
+    DWORD bytesTransferred;
+    LPCLIENT_INFO clientInfo;
+    LPWORKER_DATA workerData;
+    LPOVERLAPPED overlappedData;
+
+    workerData = (LPWORKER_DATA)pParameter;
+
+    while (GetQueuedCompletionStatus(workerData->serverInfo->completionPort,
+                                     &bytesTransferred,
+                                     (PULONG_PTR)&clientInfo,
+                                     (LPOVERLAPPED *)&overlappedData,
+                                     INFINITE))
+    {
+
+        if (bytesTransferred == 0)
+        { 
+            CloseClient(clientInfo, workerData->serverInfo);
+        }
+        else
+        {
+            DWORD flags;
+            clientInfo->wsaBuf.len = bytesTransferred;
+            WSASend(clientInfo->socket, &(clientInfo->wsaBuf), 1, NULL, 0, &(clientInfo->overlapped), NULL);
+
+            ZeroMemory(&(clientInfo->overlapped), sizeof(OVERLAPPED));
+            ZeroMemory(clientInfo->buffer, DATA_BUFSIZE);
+            flags = 0;
+
+            WSARecv(clientInfo->socket, &(clientInfo->wsaBuf), 1, NULL, &flags, &(clientInfo->overlapped), NULL);
+        }
+    }
+
+    return 0;
+}
+
+void fn1()
+{
+   printf( "HOLA.\n" );
+}
+
+int main(int argc, char* argv[])
+{
+   
+    WSADATA wsaData;
+    SOCKADDR_IN internetAddr;
+    INT port;
+    SOCKET listenSocket;
+    INT wsaOpResult;
+
+    SYSTEM_INFO systemInfo;
+
+    CRITICAL_SECTION criticalSection;
+    HANDLE completionPort;
+
+    SERVER_INFO *serverInfo;
+
+    INT workersToCreate;
+    INT workersCreated;
+    INT exitStatus = EXIT_SUCCESS;
+
+    atexit(fn1);
+
+    puts(PROGRAM_VERSION);
+
+    if (argc < 2)
+    {
+        Usage(argv[0]);
+        return EXIT_FAILURE;
+    }
+
+    port = atoi(argv[1]);
+
+    if (port <= 0) {
+        puts("Invalid port number");
+        return EXIT_FAILURE;
+    }
+
+    serverInfo = (SERVER_INFO *)GlobalAlloc(GPTR, sizeof(SERVER_INFO));
+
+    // This critical section is used to protect access to the clientsStats structure and avoid to merge log messages.
+    InitializeCriticalSection(&criticalSection);
+
+    // Initialize Winsock
+    wsaOpResult = WSAStartup(MAKEWORD(2, 2), &wsaData);
+    if (wsaOpResult != 0)
+    {
+        PrintWindowsErrorCode(wsaOpResult, "Error initializing Winsock");
+        return EXIT_FAILURE;
+    }
+
+    // Creating completion port
+    completionPort = CreateIoCompletionPort(INVALID_HANDLE_VALUE, NULL, 0, 0);
+    if (completionPort == NULL)
+    {
+        PrintWindowsError("Error creating completion port");
+        WSACleanup();
+        CloseHandle(completionPort);
+        return EXIT_FAILURE;
+    }
+
+    // Create socket with overlapped I/O enabled.
+    listenSocket = WSASocketW(AF_INET, SOCK_STREAM, IPPROTO_TCP, NULL, 0, WSA_FLAG_OVERLAPPED);
+
+    if (listenSocket == INVALID_SOCKET)
+    {
+        PrintWindowsError("Error creating server socket");
+        WSACleanup();
+        CloseHandle(completionPort);
+        return EXIT_FAILURE;
+    }
+
+     // Determine how many processors are on the system
+    GetSystemInfo(&systemInfo);
+
+    // Create the worker threads. One for each processor.
+    workersToCreate = min(systemInfo.dwNumberOfProcessors, MAX_WORKERS);
+
+    printf("Trying to create %d worker threads...\n", workersToCreate);
+
+    workersCreated = 0;
+    for (DWORD i = 0; i < workersToCreate; i++)
+    {
+        LPWORKER_DATA workerData = (LPWORKER_DATA)GlobalAlloc(GPTR, sizeof(WORKER_DATA));
+        HANDLE threadHandle;
+
+        threadHandle = CreateThread(NULL, 0, ServerWorkerThread, (LPVOID)workerData, 0, NULL);
+        if (threadHandle == NULL)
+        {
+            PrintWindowsError("Error creating worker thread");
+            GlobalFree(workerData);
+
+        } else {
+            workerData->threadHandle = threadHandle;
+            workerData->serverInfo = serverInfo;
+            workersCreated++;
+        }
+    }
+
+    // if no worker threads were created, exit.
+    if (!workersCreated) {
+        fprintf(stderr, "No working threads created. Exiting.\n");
+        WSACleanup();
+        CloseHandle(completionPort);
+        DeleteCriticalSection(&criticalSection);
+        ExitProcess(1);
+    }
+    
+    printf("Created %d worker threads.\n", workersCreated);
+
+    serverInfo->listenSocket = listenSocket;
+
+    // bind and set listening
+    internetAddr.sin_family = AF_INET;
+    internetAddr.sin_addr.s_addr = htonl(INADDR_ANY);
+    internetAddr.sin_port = htons((USHORT)port);
+
+    // Set SO_REUSEADDR option to allow reuse of the address
+    BOOL bOptVal = TRUE;
+    int bOptLen = sizeof(BOOL);
+    setsockopt(listenSocket, SOL_SOCKET, SO_REUSEADDR, (char *)&bOptVal, bOptLen);
+
+    wsaOpResult = bind(listenSocket, (SOCKADDR *)&internetAddr, sizeof(SOCKADDR));
+    if (wsaOpResult == SOCKET_ERROR)
+    {
+        PrintWindowsError("Error binding server socket");
+        closesocket(listenSocket);
+        WSACleanup();
+        ExitProcess(1);
+    }
+
+    wsaOpResult = listen(listenSocket, SOMAXCONN);
+    if (wsaOpResult == SOCKET_ERROR)
+    {
+        PrintWindowsError("Error listening on server socket");
+        closesocket(listenSocket);
+        WSACleanup();    
+        ExitProcess(1);
+    }
+
+    printf("Server listening on port %d\n", port);
+
+
+    // Server code. Accepting connections and initializing receiving data.
+    while (TRUE)
+    {
+        SOCKADDR_IN saRemote;
+        SOCKET acceptSocket;
+        int remoteLen = sizeof(saRemote);
+
+        acceptSocket = WSAAccept(listenSocket, (SOCKADDR *)&saRemote, &remoteLen, NULL, (DWORD_PTR)NULL);
+
+        if (acceptSocket == INVALID_SOCKET)
+        {
+            PrintWindowsError("Error accepting connection");
+        }
+        else
+        {
+
+            printf("Accepted connection from %s:%d\n", inet_ntoa(saRemote.sin_addr), ntohs(saRemote.sin_port));
+
+            LPCLIENT_INFO clientInfo = RegisterClient(serverInfo, acceptSocket, &saRemote, remoteLen);
+   
+            if (CreateIoCompletionPort((HANDLE)acceptSocket, completionPort, (ULONG_PTR)clientInfo, 0) == NULL)
+            {
+                PrintWindowsError("Error at assigning completion port to socket");
+                CloseClient(clientInfo, serverInfo);
+            }
+            else
+            {
+                DWORD overlappedOpResult;
+                DWORD wsaRecvFlags;
+                DWORD recvBytes;
+
+                wsaRecvFlags = 0;
+                wsaOpResult = WSARecv(clientInfo->socket, &(clientInfo->wsaBuf), 1, (LPDWORD)&recvBytes, (LPDWORD)&wsaRecvFlags, &(clientInfo->overlapped), NULL);
+                
+                overlappedOpResult = CheckOverlappedSocketOperation(wsaOpResult);
+
+                if (overlappedOpResult != 0)
+                {
+                    CloseClient(clientInfo, serverInfo);
+                    printf("Closing connection from %s:%d. Clients: %d\n", inet_ntoa(clientInfo->clientAddr.sin_addr), ntohs(clientInfo->clientAddr.sin_port), (int)serverInfo->nClients);
+                }
+                
+            }
+        }
+    }
+
+    closesocket(serverInfo->listenSocket);
+
+    GlobalFree(serverInfo);
+    WSACleanup();
+    CloseHandle(completionPort);
+    DeleteCriticalSection(&criticalSection);
+
+    return exitStatus;
 }
