@@ -29,6 +29,8 @@
 #define CLIENT_NO_ERROR 0
 #define MAX_WORKERS 1
 
+#pragma comment(lib, "ws2_32.lib")
+
 typedef struct
 {
     SOCKET socket;
@@ -36,7 +38,6 @@ typedef struct
 
     OVERLAPPED overlapped;
     WSABUF wsaBuf;
-    char *buffer;
 
 } CLIENT_INFO, *LPCLIENT_INFO;
 
@@ -100,24 +101,25 @@ void CloseClient(LPCLIENT_INFO clientInfo, LPSERVER_INFO serverInfo)
     serverInfo->nClients--;
     LeaveCriticalSection(&serverInfo->criticalSection);
     closesocket(clientInfo->socket);
-    GlobalFree(clientInfo->buffer);
+    GlobalFree(clientInfo->wsaBuf.buf);
     GlobalFree(clientInfo);   
 }
 
 LPCLIENT_INFO RegisterClient(LPSERVER_INFO serverInfo, SOCKET clientSocket, LPSOCKADDR_IN remoteClientAddrInfo, int remoteLen)
 {
 
-    LPCLIENT_INFO clientInfo;
+    LPCLIENT_INFO clientInfo = (LPCLIENT_INFO)GlobalAlloc(GPTR, sizeof(CLIENT_INFO));
+
+
     EnterCriticalSection(&serverInfo->criticalSection);
     serverInfo->nClients++;
     LeaveCriticalSection(&serverInfo->criticalSection);
     
-    clientInfo = (LPCLIENT_INFO)GlobalAlloc(GPTR, sizeof(CLIENT_INFO));
     clientInfo->socket = clientSocket;
     ZeroMemory(&(clientInfo->overlapped), sizeof(OVERLAPPED));
-    ZeroMemory(&(clientInfo->buffer), sizeof(DATA_BUFSIZE));
+    clientInfo->wsaBuf.buf = (CHAR *)GlobalAlloc(GPTR, DATA_BUFSIZE);
+    ZeroMemory(clientInfo->wsaBuf.buf, sizeof(DATA_BUFSIZE));
     clientInfo->wsaBuf.len = DATA_BUFSIZE;
-    clientInfo->wsaBuf.buf = clientInfo->buffer;
 
     CopyMemory(&clientInfo->clientAddr, remoteClientAddrInfo, remoteLen);
 
@@ -128,9 +130,8 @@ int CheckOverlappedSocketOperation(DWORD wsaOpResult) {
     if (wsaOpResult == SOCKET_ERROR)
     {
         int lastError = WSAGetLastError();
-        if (lastError != WSA_IO_PENDING)
+        if (lastError != WSA_IO_PENDING) 
         {
-            PrintWindowsErrorCode(lastError, "Error in overlapped socket operation");
             return lastError;
         }
     }
@@ -143,14 +144,15 @@ DWORD WINAPI ServerWorkerThread(LPVOID pParameter)
     DWORD bytesTransferred;
     LPCLIENT_INFO clientInfo;
     LPWORKER_DATA workerData;
-    LPOVERLAPPED overlappedData;
+    LPOVERLAPPED overlappedFromSocket;
+    LPOVERLAPPED overlappedToSocket;
 
     workerData = (LPWORKER_DATA)pParameter;
 
     while (GetQueuedCompletionStatus(workerData->serverInfo->completionPort,
                                      &bytesTransferred,
                                      (PULONG_PTR)&clientInfo,
-                                     (LPOVERLAPPED *)&overlappedData,
+                                     (LPOVERLAPPED *)&overlappedFromSocket,
                                      INFINITE))
     {
 
@@ -162,10 +164,10 @@ DWORD WINAPI ServerWorkerThread(LPVOID pParameter)
         {
             DWORD flags;
             clientInfo->wsaBuf.len = bytesTransferred;
-            WSASend(clientInfo->socket, &(clientInfo->wsaBuf), 1, NULL, 0, &(clientInfo->overlapped), NULL);
+            WSASend(clientInfo->socket, &(clientInfo->wsaBuf), 1, NULL, 0, &overlappedToSocket, NULL);
 
             ZeroMemory(&(clientInfo->overlapped), sizeof(OVERLAPPED));
-            ZeroMemory(clientInfo->buffer, DATA_BUFSIZE);
+            ZeroMemory(clientInfo->wsaBuf.buf, DATA_BUFSIZE);
             flags = 0;
 
             WSARecv(clientInfo->socket, &(clientInfo->wsaBuf), 1, NULL, &flags, &(clientInfo->overlapped), NULL);
@@ -176,8 +178,7 @@ DWORD WINAPI ServerWorkerThread(LPVOID pParameter)
 }
 
 void fn1()
-{
-   printf( "HOLA.\n" );
+{;
 }
 
 int main(int argc, char* argv[])
@@ -194,15 +195,17 @@ int main(int argc, char* argv[])
     CRITICAL_SECTION criticalSection;
     HANDLE completionPort;
 
-    SERVER_INFO *serverInfo;
+    LPSERVER_INFO serverInfo;
 
     INT workersToCreate;
     INT workersCreated;
     INT exitStatus = EXIT_SUCCESS;
 
-    atexit(fn1);
+    //atexit(fn1);
 
     puts(PROGRAM_VERSION);
+
+    /*
 
     if (argc < 2)
     {
@@ -215,9 +218,11 @@ int main(int argc, char* argv[])
     if (port <= 0) {
         puts("Invalid port number");
         return EXIT_FAILURE;
-    }
+    }*/
 
-    serverInfo = (SERVER_INFO *)GlobalAlloc(GPTR, sizeof(SERVER_INFO));
+    port = 7777;
+
+    serverInfo = (LPSERVER_INFO)GlobalAlloc(GPTR, sizeof(SERVER_INFO));
 
     // This critical section is used to protect access to the clientsStats structure and avoid to merge log messages.
     InitializeCriticalSection(&criticalSection);
@@ -250,6 +255,10 @@ int main(int argc, char* argv[])
         CloseHandle(completionPort);
         return EXIT_FAILURE;
     }
+
+    serverInfo->completionPort = completionPort;
+    serverInfo->criticalSection = criticalSection;
+    serverInfo->nClients = 0;
 
      // Determine how many processors are on the system
     GetSystemInfo(&systemInfo);
@@ -360,6 +369,7 @@ int main(int argc, char* argv[])
 
                 if (overlappedOpResult != 0)
                 {
+                    PrintWindowsErrorCode(overlappedOpResult, "Error starting reading from client");
                     CloseClient(clientInfo, serverInfo);
                     printf("Closing connection from %s:%d. Clients: %d\n", inet_ntoa(clientInfo->clientAddr.sin_addr), ntohs(clientInfo->clientAddr.sin_port), (int)serverInfo->nClients);
                 }
