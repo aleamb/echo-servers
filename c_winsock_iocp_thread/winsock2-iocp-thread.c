@@ -23,6 +23,7 @@
 #include <winsock2.h>
 #include <ws2tcpip.h>
 
+#define PROGRAM_NAME "winsock2-iocp-thread"
 #define DATA_BUFSIZE 1024
 #define MAX_DEBUG_MSG_SIZE_TO_PRINT 128
 
@@ -35,9 +36,11 @@ typedef struct
 typedef struct _PER_HANDLE_DATA
 {
     SOCKET socket;
+    USHORT port;
     SOCKADDR_IN clientAddr;
     CLIENTS_STATS *clientsStats;
     CHAR address_str[INET6_ADDRSTRLEN];
+    
 } PER_HANDLE_DATA, *LPPER_HANDLE_DATA;
 
 typedef struct
@@ -50,10 +53,12 @@ typedef struct
 
 CRITICAL_SECTION CriticalSection;
 
+void Usage();
+
 DWORD WINAPI ServerWorkerThread(LPVOID);
 
-void PrintWinError(DWORD, const char *, ...);
-void WinErrorExit(DWORD, const char *, ...);
+void PrintWinError(const char *);
+
 void NotifyClientClosed(LPPER_HANDLE_DATA);
 
 
@@ -70,38 +75,36 @@ int main(int argc, char* argv[])
 
     if (argc < 2)
     {
-        printf("Usage: %s <port>\n", argv[0]);
-        exit(1);
+        Usage();
+        ExitProcess(1);
     }
 
     port = atoi(argv[1]);
 
     if (port <= 0) {
-        puts("Invalid port number.\n");
-        exit(2);
+        puts("Invalid port number");
+        ExitProcess(1);
     }
 
     // This critical section is used to protect access to the clientsStats structure and avoid logs merging.
-    if (!InitializeCriticalSectionAndSpinCount(&CriticalSection, 0x00000400)) {
-
-        WinErrorExit(GetLastError(), "Error initializing critical section.\n");
-    }
+    InitializeCriticalSection(&CriticalSection);
 
     // initialize Winsock
     int result = WSAStartup(MAKEWORD(2, 2), &wsaData);
     if (result != 0)
     {
-        WinErrorExit(GetLastError(), "Error initializing Winsock.\n");
+        PrintWinError("Error initializing Winsock");
+        ExitProcess(1);
     }
 
     // creating completion port
     completionPort = CreateIoCompletionPort(INVALID_HANDLE_VALUE, NULL, 0, 0);
     if (completionPort == NULL)
     {
-        dw = GetLastError();
+        PrintWinError("Error creating completion port");
         WSACleanup();
         CloseHandle(completionPort);
-        WinErrorExit(dw, "Error creating completion port.\n");
+        ExitProcess(1);
     }
 
     // Create socket with overlapped I/O enabled.
@@ -109,10 +112,10 @@ int main(int argc, char* argv[])
 
     if (listenSocket == INVALID_SOCKET)
     {
-        dw = GetLastError();
+        PrintWinError("Error creating server socket");
         WSACleanup();
         CloseHandle(completionPort);
-        WinErrorExit(dw, "Error creating server socket.\n");
+        ExitProcess(1);
     }
 
     // bind and set listening
@@ -128,19 +131,19 @@ int main(int argc, char* argv[])
     result = bind(listenSocket, (SOCKADDR *)&internetAddr, sizeof(SOCKADDR));
     if (result == SOCKET_ERROR)
     {
-        dw = GetLastError();
+        PrintWinError("Error binding server socket");
         closesocket(listenSocket);
         WSACleanup();
-        WinErrorExit(dw, "Error binding server socket.\n");
+        ExitProcess(1);
     }
 
     result = listen(listenSocket, SOMAXCONN);
     if (result == SOCKET_ERROR)
     {
-        dw = GetLastError();
+        PrintWinError("Error listening on server socket");
         closesocket(listenSocket);
-        WSACleanup();
-        WinErrorExit(dw, "Error listening on server socket.\n");
+        WSACleanup();    
+        ExitProcess(1);
     }
 
     printf("Server listening on port %d\n", port);
@@ -155,10 +158,10 @@ int main(int argc, char* argv[])
         threadHandle = CreateThread(NULL, 0, ServerWorkerThread, completionPort, 0, NULL);
         if (threadHandle == NULL)
         {
-            dw = GetLastError();
+            PrintWinError("Error creating worker thread");
             WSACleanup();
             CloseHandle(completionPort);
-            WinErrorExit(dw, "Error creating worker thread %d\n", i);
+            ExitProcess(1);
         }
     }
     
@@ -178,7 +181,7 @@ int main(int argc, char* argv[])
 
         if (acceptSocket == INVALID_SOCKET)
         {
-            PrintWinError(GetLastError(), "Error accepting connection.\n");
+            PrintWinError("Error accepting connection");
         }
         else
         {
@@ -193,9 +196,11 @@ int main(int argc, char* argv[])
             CopyMemory(&handleData->clientAddr, &saRemote, remoteLen);
             inet_ntop(AF_INET, &saRemote.sin_addr, handleData->address_str, INET6_ADDRSTRLEN);
 
+            printf("Accepting connection from %s:%d. Clients: %d\n", handleData->address_str, ntohs(saRemote.sin_port), (int)(++clientsStats->nClients));
+
             if (CreateIoCompletionPort((HANDLE)acceptSocket, completionPort, (ULONG_PTR)handleData, 0) == NULL)
             {
-                PrintWinError(GetLastError(), "Error assign completion port to socket.\n");
+                PrintWinError("Error assign completion port to socket");
                 closesocket(acceptSocket);
                 GlobalFree(handleData);
             }
@@ -207,9 +212,7 @@ int main(int argc, char* argv[])
                 perIoData->wsaBuf.len = DATA_BUFSIZE;
                 perIoData->wsaBuf.buf = perIoData->buffer;
                 wsaRecvFlags = 0;
-
-                printf("Accepting connection from %s:%d. Clients: %d\n", handleData->address_str, ntohs(saRemote.sin_port), (int)(++clientsStats->nClients));
-
+                
                 result = WSARecv(handleData->socket, &(perIoData->wsaBuf), 1, (LPDWORD)&recvBytes, (LPDWORD)&wsaRecvFlags, &(perIoData->overlapped), NULL);
 
                 if (result == SOCKET_ERROR)
@@ -217,8 +220,8 @@ int main(int argc, char* argv[])
                     dw = WSAGetLastError();
                     if (dw != WSA_IO_PENDING)
                     {
-                        PrintWinError(dw, "Error assign completion port to socket.\n");
-                        closesocket(acceptSocket);
+                        fprintf(stderr, "Error preparing receiving of data from %s. Error: %d\n", handleData->address_str, dw);
+                        closesocket(handleData->socket);
                         GlobalFree(handleData);
                         GlobalFree(perIoData);
                     }
@@ -242,10 +245,6 @@ DWORD WINAPI ServerWorkerThread(LPVOID pCompletionPortID)
     LPPER_HANDLE_DATA handleData;
     DWORD flags;
 
-    #ifdef _DEBUG
-    DWORD bytesToPrint;
-    #endif
-
     while (GetQueuedCompletionStatus(completionPort,
                                      &bytesTransferred,
                                      (PULONG_PTR)&handleData,
@@ -263,6 +262,7 @@ DWORD WINAPI ServerWorkerThread(LPVOID pCompletionPortID)
         else
         {
             #ifdef _DEBUG
+            DWORD bytesToPrint;
             char tmp_byte;
             bytesToPrint = bytesTransferred > MAX_DEBUG_MSG_SIZE_TO_PRINT ?  MAX_DEBUG_MSG_SIZE_TO_PRINT : bytesTransferred;
             tmp_byte = perIoData->wsaBuf.buf[bytesToPrint];
@@ -288,51 +288,37 @@ DWORD WINAPI ServerWorkerThread(LPVOID pCompletionPortID)
 
 //
 
+void Usage() {
+    printf("Usage: %s <port>\n", PROGRAM_NAME);
+}
+
 void NotifyClientClosed(LPPER_HANDLE_DATA handleData) 
 {
-    EnterCriticalSection(&CriticalSection); 
+    EnterCriticalSection(&CriticalSection);
+
     handleData->clientsStats->nClients--;
     printf("Closing connection from %s. Clients: %d\n", handleData->address_str, handleData->clientsStats->nClients);
+
     LeaveCriticalSection(&CriticalSection);   
 }
 
-void vPrintError(DWORD dw, const char *pMainErrorMsg, va_list args)
+void PrintWinError(const char *pMainErrorMsg)
 {
-    LPVOID lpMsgBuf;
-
-    vfprintf(stderr, pMainErrorMsg, args);
+    LPSTR lpMsgBuffer = NULL;
+    DWORD dwLastError = GetLastError();
 
     if (FormatMessage(
             FORMAT_MESSAGE_ALLOCATE_BUFFER | FORMAT_MESSAGE_FROM_SYSTEM,
             NULL,
-            dw,
+            dwLastError,
             MAKELANGID(LANG_NEUTRAL, SUBLANG_DEFAULT),
-            (LPTSTR)&lpMsgBuf, 0, NULL) != 0)
+           (LPSTR)&lpMsgBuffer, 0, NULL) != 0)
     {
-        fprintf(stderr, "%s Error code: %d -> %s\n", pMainErrorMsg, (int)dw, (LPCTSTR)lpMsgBuf);
-        LocalFree(lpMsgBuf);
+        fprintf(stderr, "%s: %s (%ld)\n", pMainErrorMsg, lpMsgBuffer, dwLastError);
+        LocalFree(lpMsgBuffer);
     }
     else
     {
-        fprintf(stderr, "%s Error code: %d\n", pMainErrorMsg, (int)dw);
+        fprintf(stderr, "%s. Error code: %ld\n", pMainErrorMsg, dwLastError);
     }
 }
-
-void PrintWinError(DWORD dw, const char *pMainErrorMsg, ...)
-{
-    va_list args;
-    va_start(args, pMainErrorMsg);
-    vPrintError(dw, pMainErrorMsg, args);
-    va_end(args);
-}
-
-void WinErrorExit(DWORD dw, const char *pMainErrorMsg, ...)
-{
-    va_list args;
-    va_start(args, pMainErrorMsg);
-    vPrintError(dw, pMainErrorMsg, args);
-    va_end(args);
-    ExitProcess(dw);
-}
-
-
