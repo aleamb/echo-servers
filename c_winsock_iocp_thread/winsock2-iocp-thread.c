@@ -58,8 +58,8 @@ typedef struct
 } WORKER_DATA, *LPWORKER_DATA;
 
 void Usage(const char *programName);
-void Log(const SOCKADDR_IN* addrInfo, const char* pMsg, DWORD errorCod);
-void PWError(const char* msg);
+void Log(const SOCKADDR_IN *addrInfo, const char *pMsg, DWORD errorCod);
+void PWError(const char *msg);
 INT CreateWorkerThreads();
 DWORD WINAPI ServerWorkerThread(LPVOID completionPort);
 void CloseClient(LPCLIENT_INFO clientInfo, LPSERVER_INFO pServerInfo);
@@ -228,18 +228,20 @@ INT CreateWorkerThreads()
     return workersCreated;
 }
 
-void Log(const SOCKADDR_IN* addrInfo, const char* msg, DWORD errorCode)
+void Log(const SOCKADDR_IN *addrInfo, const char *msg, DWORD errorCode)
 {
     CHAR errorMsgBuffer[MAX_BUF_WIN_STR_ERROR] = {0};
-    CHAR address_str[INET6_ADDRSTRLEN ] = {'-'};
+    CHAR address_str[INET6_ADDRSTRLEN] = {'-'};
     INT port = 0;
 
-    if (addrInfo) {
+    if (addrInfo)
+    {
         inet_ntop(AF_INET, &addrInfo->sin_addr, address_str, INET6_ADDRSTRLEN);
         port = (INT)htons(addrInfo->sin_port);
     }
 
-    if (errorCode) {
+    if (errorCode)
+    {
         if (FormatMessage(
                 FORMAT_MESSAGE_FROM_SYSTEM,
                 NULL,
@@ -251,17 +253,23 @@ void Log(const SOCKADDR_IN* addrInfo, const char* msg, DWORD errorCode)
         }
     }
 
-    if (addrInfo) {
+    if (addrInfo)
+    {
         printf("%s:%d -> %s (%s)\n", address_str, port, msg, errorMsgBuffer);
-    } else if (!addrInfo && errorCode) {
+    }
+    else if (!addrInfo && errorCode)
+    {
         fprintf(stderr, "%s: %s\n", msg, errorMsgBuffer);
-    } else {
+    }
+    else
+    {
         fprintf(stderr, "%s\n", msg);
     }
     fflush(stdout);
 }
 
-void PWError(const char* msg) {
+void PWError(const char *msg)
+{
     Log(NULL, msg, GetLastError());
 }
 
