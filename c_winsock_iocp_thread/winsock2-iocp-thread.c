@@ -3,7 +3,7 @@
     winsock2-iocp-thread.c
 
     This is a simple echo server using Winsock2 API with IOCP and worker threads.
-    
+
     Based on example from book Network Programming for Microsoft Windows, 2ed, by Anthony Jones and Jim Ohlund
 
     author: Alejandro Ambroa (jandroz@gmail.com)
@@ -26,6 +26,7 @@
 #define PROGRAM_VERSION "echo-servers/c_winsock_iocp_thread v1.0.0"
 #define DATA_BUFSIZE 1024
 #define MAX_WORKERS 1
+#define MAX_CLIENTS 128
 
 #define MAX_DEBUG_MSG_SIZE_TO_PRINT 128
 #define NO_PERROR 0
@@ -44,38 +45,41 @@ typedef struct
 typedef struct
 {
     INT nClients;
-    CLIENT_INFO *clients;
     SOCKET listenSocket;
     CRITICAL_SECTION criticalSection;
     HANDLE completionPort;
+    LPCLIENT_INFO *clients;
 
 } SERVER_INFO, *LPSERVER_INFO;
 
-typedef struct 
+typedef struct
 {
     HANDLE threadHandle;
     SERVER_INFO *serverInfo;
 
 } WORKER_DATA, *LPWORKER_DATA;
 
-
-void Usage(const char* programName);
-void PrintWindowsErrorCode(DWORD errorCode, const char * message);
-void PrintWindowsError(const char * message);
+void Usage(const char *programName);
+void PrintWindowsErrorCode(DWORD errorCode, const char *message);
+void PrintWindowsError(const char *message);
 void Log(const char *pMainMsg, DWORD errorCode, LPCLIENT_INFO clientInfo, LPSERVER_INFO pServerInfo);
 void LogError(const char *pMainErrorMsg, DWORD errorCode, LPCLIENT_INFO clientInfo, LPSERVER_INFO pServerInfo);
 void LogInfo(const char *pMainMsg, LPCLIENT_INFO clientInfo, LPSERVER_INFO pServerInfo);
+INT CreateWorkerThreads();
 DWORD WINAPI ServerWorkerThread(LPVOID completionPort);
 void CloseClient(LPCLIENT_INFO clientInfo, LPSERVER_INFO pServerInfo);
 LPCLIENT_INFO RegisterClient(LPSERVER_INFO pServerInfo, SOCKET clientSocket, LPSOCKADDR_IN clientSockaddr, int remoteLen);
 INT GetNumClients(LPSERVER_INFO pServerInfo);
 int CheckOverlappedSocketOperation(DWORD overlappedSocketOperation);
+void ExitHandler(void);
+void Cleanup();
+BOOL WINAPI CtrlHandler(DWORD fdwCtrlType);
 
 // global server info
 LPSERVER_INFO serverInfo = NULL;
 
-
-void Usage(const char* programName) {
+void Usage(const char *programName)
+{
     printf("%s\nUsage: %s <port>\n", PROGRAM_VERSION, programName);
 }
 
@@ -106,15 +110,19 @@ void PrintWindowsError(const char *pMainErrorMsg)
     PrintWindowsErrorCode(GetLastError(), pMainErrorMsg);
 }
 
-void Log(const char *pMainMsg, DWORD errorCode, LPCLIENT_INFO clientInfo, LPSERVER_INFO pServerInfo) {
-    
+void Log(const char *pMainMsg, DWORD errorCode, LPCLIENT_INFO clientInfo, LPSERVER_INFO pServerInfo)
+{
+
     char *empty = "";
     char *errorMsg = NULL;
     CHAR msgErrorBuffer[64];
 
-    if (errorCode == NO_PERROR) {
+    if (errorCode == NO_PERROR)
+    {
         errorMsg = empty;
-    } else {
+    }
+    else
+    {
         SPrintfWinErrorMsg(errorCode, msgErrorBuffer, sizeof(msgErrorBuffer));
         errorMsg = msgErrorBuffer;
     }
@@ -122,22 +130,23 @@ void Log(const char *pMainMsg, DWORD errorCode, LPCLIENT_INFO clientInfo, LPSERV
     printf("%s -> %s (%s). Current clients: %d\n", clientInfo->address_str, pMainMsg, errorMsg, GetNumClients(pServerInfo));
 }
 
-void LogError(const char *pMainErrorMsg, DWORD errorCode, LPCLIENT_INFO clientInfo, LPSERVER_INFO pServerInfo) 
+void LogError(const char *pMainErrorMsg, DWORD errorCode, LPCLIENT_INFO clientInfo, LPSERVER_INFO pServerInfo)
 {
     Log(pMainErrorMsg, errorCode, clientInfo, pServerInfo);
 }
 
-void LogInfo(const char *pMainMsg, LPCLIENT_INFO clientInfo, LPSERVER_INFO pServerInfo) 
+void LogInfo(const char *pMainMsg, LPCLIENT_INFO clientInfo, LPSERVER_INFO pServerInfo)
 {
     Log(pMainMsg, NO_PERROR, clientInfo, pServerInfo);
 }
 
 // socket functions helpers
-int CheckOverlappedSocketOperation(DWORD wsaOpResult) {
+INT CheckOverlappedSocketOperation(DWORD wsaOpResult)
+{
     if (wsaOpResult == SOCKET_ERROR)
     {
         int lastError = WSAGetLastError();
-        if (lastError != WSA_IO_PENDING) 
+        if (lastError != WSA_IO_PENDING)
         {
             return lastError;
         }
@@ -147,45 +156,63 @@ int CheckOverlappedSocketOperation(DWORD wsaOpResult) {
 
 // server functions
 
-void CloseClient(LPCLIENT_INFO clientInfo, LPSERVER_INFO pServerInfo)
+LPCLIENT_INFO RegisterClient(LPSERVER_INFO pServerInfo, SOCKET clientSocket, LPSOCKADDR_IN remoteClientAddrInfo, int remoteLen)
 {
+    if (pServerInfo->nClients >= MAX_CLIENTS)
+    {
+        return NULL;
+    }
+
+    LPCLIENT_INFO clientInfo = (LPCLIENT_INFO)GlobalAlloc(GPTR, sizeof(CLIENT_INFO));
+    ZeroMemory(clientInfo, sizeof(CLIENT_INFO));
+
+    clientInfo->wsaBuf.buf = (CHAR *)GlobalAlloc(GPTR, DATA_BUFSIZE);
+    ZeroMemory(clientInfo->wsaBuf.buf, sizeof(DATA_BUFSIZE));
+    clientInfo->wsaBuf.len = DATA_BUFSIZE;
+
+    clientInfo->socket = clientSocket;
+    CopyMemory(&clientInfo->clientAddr, remoteClientAddrInfo, remoteLen);
+    inet_ntop(AF_INET, &clientInfo->clientAddr.sin_addr, clientInfo->address_str, INET6_ADDRSTRLEN);
+    snprintf(clientInfo->address_str + strlen(clientInfo->address_str), 6, ":%d", ntohs(remoteClientAddrInfo->sin_port));
     EnterCriticalSection(&pServerInfo->criticalSection);
-    pServerInfo->nClients--;
+    for (INT c = 0; c < MAX_CLIENTS; c++)
+    {
+        if (pServerInfo->clients[c] == NULL)
+        {
+            pServerInfo->clients[c] = clientInfo;
+        }
+    }
+    pServerInfo->nClients++;
     LeaveCriticalSection(&pServerInfo->criticalSection);
-    closesocket(clientInfo->socket);
-    GlobalFree(clientInfo->wsaBuf.buf);
-    GlobalFree(clientInfo);   
+    return clientInfo;
 }
 
-INT GetNumClients(LPSERVER_INFO pServerInfo) {
+void CloseClient(LPCLIENT_INFO clientInfo, LPSERVER_INFO pServerInfo)
+{
+    closesocket(clientInfo->socket);
+    GlobalFree(clientInfo->wsaBuf.buf);
+    GlobalFree(clientInfo);
+
+    EnterCriticalSection(&pServerInfo->criticalSection);
+    pServerInfo->nClients--;
+    for (INT c = 0; c < MAX_CLIENTS; c++)
+    {
+        if (pServerInfo->clients[c] == clientInfo)
+        {
+            pServerInfo->clients[c] = NULL;
+        }
+    }
+    LeaveCriticalSection(&pServerInfo->criticalSection);
+}
+
+INT GetNumClients(LPSERVER_INFO pServerInfo)
+{
 
     INT nClients;
     EnterCriticalSection(&pServerInfo->criticalSection);
     nClients = pServerInfo->nClients;
     LeaveCriticalSection(&pServerInfo->criticalSection);
     return nClients;
-}
-
-LPCLIENT_INFO RegisterClient(LPSERVER_INFO pServerInfo, SOCKET clientSocket, LPSOCKADDR_IN remoteClientAddrInfo, int remoteLen)
-{
-    LPCLIENT_INFO clientInfo = (LPCLIENT_INFO)GlobalAlloc(GPTR, sizeof(CLIENT_INFO));
-    ZeroMemory(clientInfo, sizeof(CLIENT_INFO));
-
-    clientInfo->wsaBuf.buf = (CHAR *)GlobalAlloc(GPTR, DATA_BUFSIZE);
-    ZeroMemory(clientInfo->wsaBuf.buf, sizeof(DATA_BUFSIZE));
-
-    EnterCriticalSection(&pServerInfo->criticalSection);
-    pServerInfo->nClients++;
-    LeaveCriticalSection(&pServerInfo->criticalSection);
-    
-    clientInfo->socket = clientSocket;
-    clientInfo->wsaBuf.len = DATA_BUFSIZE;
-    CopyMemory(&clientInfo->clientAddr, remoteClientAddrInfo, remoteLen);
-
-    inet_ntop(AF_INET, &clientInfo->clientAddr.sin_addr, clientInfo->address_str, INET6_ADDRSTRLEN);
-    snprintf(clientInfo->address_str + strlen(clientInfo->address_str), 6, ":%d", ntohs(remoteClientAddrInfo->sin_port));
-
-    return clientInfo;
 }
 
 DWORD WINAPI ServerWorkerThread(LPVOID pParameter)
@@ -224,7 +251,7 @@ DWORD WINAPI ServerWorkerThread(LPVOID pParameter)
             INT dw = CheckOverlappedSocketOperation(result);
             if (dw != 0)
             {
-                Log("Error reading data. Closing connection.", dw, clientInfo, serverInfo);
+                LogError("Error reading data. Closing connection.", dw, clientInfo, serverInfo);
                 CloseClient(clientInfo, workerData->serverInfo);
             }
         }
@@ -237,44 +264,90 @@ void Cleanup()
 {
     if (serverInfo != NULL)
     {
-
+        for (INT c = 0; c < MAX_CLIENTS; c++)
+        {
+            LPCLIENT_INFO clientInfo = serverInfo->clients[c];
+            if (clientInfo)
+            {
+                CloseClient(clientInfo, serverInfo);
+            }
+        }
         DeleteCriticalSection(&serverInfo->criticalSection);
         CloseHandle(serverInfo->completionPort);
-
-
-
         closesocket(serverInfo->listenSocket);
+        GlobalFree(serverInfo->clients);
         GlobalFree(serverInfo);
         WSACleanup();
     }
 }
 
-void ExitHandler(void)
+INT CreateWorkerThreads()
 {
-    Cleanup();
+
+    SYSTEM_INFO systemInfo;
+    INT workersToCreate;
+    INT workersCreated = 0;
+
+    // Determine how many processors are on the system
+    GetSystemInfo(&systemInfo);
+
+    workersToCreate = min(systemInfo.dwNumberOfProcessors, MAX_WORKERS);
+
+    // Create the worker threads. One for each processor.
+    for (INT i = 0; i < workersToCreate; i++)
+    {
+        LPWORKER_DATA workerData = (LPWORKER_DATA)GlobalAlloc(GPTR, sizeof(WORKER_DATA));
+        HANDLE threadHandle;
+
+        threadHandle = CreateThread(NULL, 0, ServerWorkerThread, (LPVOID)workerData, 0, NULL);
+        if (threadHandle == NULL)
+        {
+            PrintWindowsError("Error creating worker thread");
+            GlobalFree(workerData);
+        }
+        else
+        {
+            workerData->threadHandle = threadHandle;
+            workerData->serverInfo = serverInfo;
+            workersCreated++;
+        }
+    }
+    return workersCreated;
 }
 
-
-
-int main(int argc, char* argv[])
+void ExitHandler(void)
 {
-   
+    puts("Closing server...");
+    //Cleanup();
+}
+
+BOOL WINAPI CtrlHandler(DWORD fdwCtrlType)
+{
+    switch (fdwCtrlType)
+    {
+        // Handle the CTRL-C signal.
+    case CTRL_C_EVENT:
+        ExitHandler();
+        return FALSE;
+    default:
+        return FALSE;
+    }
+}
+
+int main(int argc, char *argv[])
+{
+
     WSADATA wsaData;
     SOCKADDR_IN internetAddr;
     INT port;
     SOCKET listenSocket;
     INT wsaOpResult;
 
-    SYSTEM_INFO systemInfo;
-
     CRITICAL_SECTION criticalSection;
     HANDLE completionPort;
 
-    INT workersToCreate;
     INT workersCreated;
     INT exitStatus = EXIT_SUCCESS;
-
-    atexit(ExitHandler);
 
     puts(PROGRAM_VERSION);
 
@@ -286,13 +359,18 @@ int main(int argc, char* argv[])
 
     port = atoi(argv[1]);
 
-    if (port <= 0) {
+    if (port <= 0)
+    {
         puts("Invalid port number");
         return EXIT_FAILURE;
     }
 
+    atexit(ExitHandler);
+    SetConsoleCtrlHandler(CtrlHandler, TRUE);
+
     serverInfo = (LPSERVER_INFO)GlobalAlloc(GPTR, sizeof(SERVER_INFO));
     ZeroMemory(serverInfo, sizeof(SERVER_INFO));
+    serverInfo->clients = (LPCLIENT_INFO *)GlobalAlloc(GPTR, MAX_CLIENTS * sizeof(LPCLIENT_INFO));
 
     // This critical section is used to protect access to the clientsStats structure and avoid to merge log messages.
     InitializeCriticalSection(&criticalSection);
@@ -326,40 +404,16 @@ int main(int argc, char* argv[])
     serverInfo->criticalSection = criticalSection;
     serverInfo->nClients = 0;
 
-     // Determine how many processors are on the system
-    GetSystemInfo(&systemInfo);
-
-    // Create the worker threads. One for each processor.
-    workersToCreate = min(systemInfo.dwNumberOfProcessors, MAX_WORKERS);
-
-    printf("Trying to create %d worker threads...\n", workersToCreate);
-
-    workersCreated = 0;
-    for (INT i = 0; i < workersToCreate; i++)
-    {
-        LPWORKER_DATA workerData = (LPWORKER_DATA)GlobalAlloc(GPTR, sizeof(WORKER_DATA));
-        HANDLE threadHandle;
-
-        threadHandle = CreateThread(NULL, 0, ServerWorkerThread, (LPVOID)workerData, 0, NULL);
-        if (threadHandle == NULL)
-        {
-            PrintWindowsError("Error creating worker thread");
-            GlobalFree(workerData);
-
-        } else {
-            workerData->threadHandle = threadHandle;
-            workerData->serverInfo = serverInfo;
-            workersCreated++;
-        }
-    }
+    workersCreated = CreateWorkerThreads();
 
     // if no worker threads were created, exit.
-    if (!workersCreated) {
+    if (!workersCreated)
+    {
         fprintf(stderr, "No working threads created. Exiting.\n");
         Cleanup();
         return EXIT_FAILURE;
     }
-    
+
     printf("Created %d worker threads.\n", workersCreated);
 
     serverInfo->listenSocket = listenSocket;
@@ -387,12 +441,11 @@ int main(int argc, char* argv[])
     {
         PrintWindowsError("Error listening on server socket");
         closesocket(listenSocket);
-        WSACleanup();    
+        WSACleanup();
         ExitProcess(1);
     }
 
     printf("Server listening on port %d\n", port);
-
 
     // Server code. Accepting connections and initializing receiving data.
     while (TRUE)
@@ -402,43 +455,41 @@ int main(int argc, char* argv[])
         int remoteLen = sizeof(saRemote);
 
         acceptSocket = WSAAccept(listenSocket, (SOCKADDR *)&saRemote, &remoteLen, NULL, (DWORD_PTR)NULL);
-        
+
         if (acceptSocket == INVALID_SOCKET)
         {
             PrintWindowsError("Error accepting connection");
+            continue;
         }
-        else
+        if (GetNumClients(serverInfo) >= MAX_CLIENTS)
         {
-            LPCLIENT_INFO clientInfo = RegisterClient(serverInfo, acceptSocket, &saRemote, remoteLen);
-   
-            if (CreateIoCompletionPort((HANDLE)acceptSocket, completionPort, (ULONG_PTR)clientInfo, 0) == NULL)
-            {
-                LogError("Error at assigning completion port. Closing connection.", GetLastError(), clientInfo, serverInfo);
-                CloseClient(clientInfo, serverInfo);
-            }
-            else
-            {
-                DWORD overlappedOpResult;
-                DWORD wsaRecvFlags;
-                DWORD recvBytes;
+            printf("Max clients exceeded. Refusing connection.\n");
+            closesocket(acceptSocket);
+            continue;
+        }
+        LPCLIENT_INFO clientInfo = RegisterClient(serverInfo, acceptSocket, &saRemote, remoteLen);
 
-                LogInfo("Accepting connection", clientInfo, serverInfo);
+        if (CreateIoCompletionPort((HANDLE)acceptSocket, completionPort, (ULONG_PTR)clientInfo, 0) == NULL)
+        {
+            LogError("Error at assigning completion port. Closing connection.", GetLastError(), clientInfo, serverInfo);
+            CloseClient(clientInfo, serverInfo);
+            continue;
+        }
+        INT overlappedOpResult;
+        DWORD wsaRecvFlags;
+        DWORD recvBytes;
 
-                wsaRecvFlags = 0;
-                wsaOpResult = WSARecv(clientInfo->socket, &(clientInfo->wsaBuf), 1, (LPDWORD)&recvBytes, (LPDWORD)&wsaRecvFlags, &(clientInfo->overlapped), NULL);
-                overlappedOpResult = CheckOverlappedSocketOperation(wsaOpResult);
-                if (overlappedOpResult != 0)
-                {
-                    LogError("Error starting reading data. Closing connection.", overlappedOpResult, clientInfo, serverInfo);
-                    CloseClient(clientInfo, serverInfo);
-                }
+        LogInfo("Accepting connection", clientInfo, serverInfo);
 
-                
-            }
+        wsaRecvFlags = 0;
+        wsaOpResult = WSARecv(clientInfo->socket, &(clientInfo->wsaBuf), 1, (LPDWORD)&recvBytes, (LPDWORD)&wsaRecvFlags, &(clientInfo->overlapped), NULL);
+        overlappedOpResult = CheckOverlappedSocketOperation(wsaOpResult);
+        if (overlappedOpResult != 0)
+        {
+            LogError("Error starting reading data. Closing connection.", overlappedOpResult, clientInfo, serverInfo);
+            CloseClient(clientInfo, serverInfo);
         }
     }
-
-    Cleanup();
 
     return exitStatus;
 }
