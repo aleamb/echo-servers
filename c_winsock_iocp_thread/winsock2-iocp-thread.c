@@ -69,6 +69,7 @@ int CheckOverlappedSocketOperation(DWORD overlappedSocketOperation);
 void ExitHandler(void);
 BOOL WINAPI CtrlHandler(DWORD fdwCtrlType);
 void Cleanup();
+void PrintNumClients(LPSERVER_INFO pServerInfo);
 
 // global server info
 LPSERVER_INFO serverInfo = NULL;
@@ -167,7 +168,7 @@ DWORD WINAPI ServerWorkerThread(LPVOID pParameter)
         if (bytesTransferred == 0)
         {
             CloseClient(clientInfo, workerData->serverInfo);
-            Log(&clientInfo->clientAddr, "Connection closed.", NO_ERROR);
+            Log(&clientInfo->clientAddr, "Connection closed", NO_ERROR);
         }
         else
         {
@@ -255,7 +256,7 @@ void Log(const SOCKADDR_IN *addrInfo, const char *msg, DWORD errorCode)
 
     if (addrInfo)
     {
-        printf("%s:%d -> %s (%s)\n", address_str, port, msg, errorMsgBuffer);
+        printf("%s:%d -> %s: %s\n", address_str, port, msg, errorMsgBuffer);
     }
     else if (!addrInfo && errorCode)
     {
@@ -469,6 +470,7 @@ int main(int argc, char *argv[])
             Log(&clientInfo->clientAddr, "Error starting reading data. Closing connection", overlappedOpResult);
             CloseClient(clientInfo, serverInfo);
         }
+        printf("Current clients: %d\n", GetNumClients(serverInfo));
     }
 
     return exitStatus;
