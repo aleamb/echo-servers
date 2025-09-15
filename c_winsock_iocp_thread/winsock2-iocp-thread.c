@@ -72,8 +72,8 @@ LPCLIENT_INFO RegisterClient(LPSERVER_INFO pServerInfo, SOCKET clientSocket, LPS
 INT GetNumClients(LPSERVER_INFO pServerInfo);
 int CheckOverlappedSocketOperation(DWORD overlappedSocketOperation);
 void ExitHandler(void);
-void Cleanup();
 BOOL WINAPI CtrlHandler(DWORD fdwCtrlType);
+void Cleanup();
 
 // global server info
 LPSERVER_INFO serverInfo = NULL;
@@ -318,7 +318,7 @@ INT CreateWorkerThreads()
 void ExitHandler(void)
 {
     puts("Closing server...");
-    //Cleanup();
+    // Cleanup();
 }
 
 BOOL WINAPI CtrlHandler(DWORD fdwCtrlType)
