@@ -1,5 +1,4 @@
 /*
-
     winsock2-iocp-thread.c
 
     This is a simple echo server using Winsock2 API with IOCP and worker threads.
@@ -15,7 +14,6 @@
     gcc -Wall -o winsock2-iocp-thread.exe winsock2-iocp-thread.c -lws2_32
 
     Tested with Visual Studio 2022 and mingw64, Windows 11.
-
 */
 
 #include <stdio.h>
@@ -25,9 +23,9 @@
 
 #define PROGRAM_VERSION "echo-servers/c_winsock_iocp_thread v1.0.0"
 
-#define DATA_BUFSIZE 1024
-#define MAX_CLIENTS 128
-#define MAX_WORKERS 16
+#define DATA_BUFSIZE 512
+#define MAX_CLIENTS 256
+#define MAX_WORKERS 8
 #define MAX_BUF_WIN_STR_ERROR 64
 #define CLIENT_NO_ERROR 0
 
