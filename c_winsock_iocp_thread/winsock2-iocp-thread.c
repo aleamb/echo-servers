@@ -45,6 +45,8 @@ typedef struct
     CRITICAL_SECTION criticalSection;
     HANDLE completionPort;
     LPCLIENT_INFO *clients;
+    HANDLE workers[MAX_WORKERS];
+    INT activeWorkers;
 
 } SERVER_INFO, *LPSERVER_INFO;
 
@@ -58,7 +60,7 @@ typedef struct
 void Usage(const char *programName);
 void Log(const SOCKADDR_IN *addrInfo, const char *pMsg, DWORD errorCod);
 void PWError(const char *msg);
-INT CreateWorkerThreads();
+INT CreateWorkerThreads(LPSERVER_INFO pServerInfo);
 DWORD WINAPI ServerWorkerThread(LPVOID completionPort);
 void CloseClient(LPCLIENT_INFO clientInfo, LPSERVER_INFO pServerInfo);
 LPCLIENT_INFO RegisterClient(LPSERVER_INFO pServerInfo, SOCKET clientSocket, LPSOCKADDR_IN clientSockaddr, int remoteLen);
@@ -193,7 +195,7 @@ DWORD WINAPI ServerWorkerThread(LPVOID pParameter)
     return 0;
 }
 
-INT CreateWorkerThreads()
+INT CreateWorkerThreads(LPSERVER_INFO pServerInfo)
 {
 
     SYSTEM_INFO systemInfo;
@@ -216,14 +218,17 @@ INT CreateWorkerThreads()
         {
             PWError("Error creating worker thread");
             GlobalFree(workerData);
+            pServerInfo->workers[i] = INVALID_HANDLE_VALUE;
         }
         else
         {
             workerData->threadHandle = threadHandle;
             workerData->serverInfo = serverInfo;
             workersCreated++;
+            pServerInfo->workers[i] = threadHandle;
         }
     }
+    pServerInfo->activeWorkers = workersCreated;
     return workersCreated;
 }
 
@@ -276,6 +281,8 @@ void Cleanup()
 {
     if (serverInfo != NULL)
     {
+        CloseHandle(serverInfo->completionPort);
+        DeleteCriticalSection(&serverInfo->criticalSection);
         for (INT c = 0; c < MAX_CLIENTS; c++)
         {
             LPCLIENT_INFO clientInfo = serverInfo->clients[c];
@@ -284,8 +291,6 @@ void Cleanup()
                 CloseClient(clientInfo, serverInfo);
             }
         }
-        DeleteCriticalSection(&serverInfo->criticalSection);
-        CloseHandle(serverInfo->completionPort);
         closesocket(serverInfo->listenSocket);
         GlobalFree(serverInfo->clients);
         GlobalFree(serverInfo);
@@ -383,7 +388,7 @@ int main(int argc, char *argv[])
     serverInfo->criticalSection = criticalSection;
     serverInfo->nClients = 0;
 
-    workersCreated = CreateWorkerThreads();
+    workersCreated = CreateWorkerThreads(serverInfo);
 
     // if no worker threads were created, exit.
     if (!workersCreated)
