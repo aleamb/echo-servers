@@ -1,12 +1,39 @@
-#!/usr/bin/python3
+#!/usr/bin/env python
 
+    
+"""
+    Script to testing echo servers sending data in multiple ways.
+
+    In each test, it prints a row with columns:
+    
+    Send timestamp, finish send timestamp, timestamo of receiving response data, 
+    response time, length of data sent, length of data received, thread id, error flag (0 if no error)
+    
+    The error is marked when sent data and received data are not equals. Last column set to 1 if error.
+
+"""
+ 
 import socket
 import sys
 import argparse
+from argparse import RawTextHelpFormatter
 import time
 import random
 import string
 import threading
+
+_author__ = "Alejandro Ambroa"
+__version__ = "1.0.0"
+__email__ = "jandroz@gmail.com"
+
+
+program_epilog = (''
+    'Table format is:'
+    '\n\n'
+    'Send timestamp, finish send timestamp, timestamo of receiving response data,' 
+    'response time, length of data sent, length of data received, thread id, error flag (0 if no error)'
+    '\n\n'
+    'The error is marked when sent data and received data are not equals. Last column set to 1 if error')
 
 
 def print_msg(msg):
@@ -120,8 +147,9 @@ if __name__ == '__main__':
 
 
     parser = argparse.ArgumentParser(
-            prog='Test echo-server',
-            description='Dirty program to test echo-servers')
+            prog='test_echo_server',
+            description='Tests echo servers sending generated variable data.',
+            epilog=program_epilog, formatter_class=RawTextHelpFormatter)
 
 
     parser.add_argument('host', type=str, help='host or ip of the  server to test', )
@@ -158,5 +186,7 @@ if __name__ == '__main__':
         pt = threading.Thread(target=test_echo, args=(args.host, args.port, args.num, args.length, args.table, args.interval))
         pt.start()
         time.sleep(random.random() * (args.interval / 1000.0))
+
+
 
 
