@@ -54,12 +54,9 @@ def test_echo(host, port, max_messages, dlength, generate_table, interval):
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
 
         data_length = dlength + 1
-
         average = 0.0
         n_msg = 0
-
         time_elapsed = 0.0
-
         acc_response_time = 0.0
 
         print_msg('Connecting to %s:%d...' % (host, port))
@@ -69,8 +66,6 @@ def test_echo(host, port, max_messages, dlength, generate_table, interval):
         print_msg('Connected. Sending messages...')
 
         t2 = time.time()
-
-        error = False
 
         while not error and n_msg < max_messages:
             n_msg += 1
@@ -83,8 +78,6 @@ def test_echo(host, port, max_messages, dlength, generate_table, interval):
             send_timestamp = time.time()
             s.sendall(data)
             finish_send_timestamp = time.time()
-
-            #print("Enviado")
 
             data_completed = False
             data_len_received = 0
@@ -109,13 +102,10 @@ def test_echo(host, port, max_messages, dlength, generate_table, interval):
                 #print("Fragment size of %d bytes" % (len(data_from_server),))
 
                 data_len_received = len(data_received)
-
                 data_completed = (data_received == data)
 
             current_time = time.time()
-
             response_time = (current_time - t1) * 1000.0
-
             acc_response_time += response_time
 
             if generate_table:
@@ -128,14 +118,11 @@ def test_echo(host, port, max_messages, dlength, generate_table, interval):
                     t2 = current_time
                     time_elapsed = 0
 
-
             # wait interval
             sleep_time = interval - response_time
             if sleep_time > 0:
                 time.sleep(sleep_time / 1000.0)
-
-
-
+        
         s.close()
 
         if not generate_table:
@@ -145,12 +132,10 @@ def test_echo(host, port, max_messages, dlength, generate_table, interval):
 
 if __name__ == '__main__':
 
-
     parser = argparse.ArgumentParser(
             prog='test_echo_server',
             description='Tests echo servers sending generated variable data.',
             epilog=program_epilog, formatter_class=RawTextHelpFormatter)
-
 
     parser.add_argument('host', type=str, help='host or ip of the  server to test', )
     parser.add_argument('port', type=int, help='port')
@@ -186,7 +171,5 @@ if __name__ == '__main__':
         pt = threading.Thread(target=test_echo, args=(args.host, args.port, args.num, args.length, args.table, args.interval))
         pt.start()
         time.sleep(random.random() * (args.interval / 1000.0))
-
-
 
 
