@@ -25,7 +25,7 @@ This repo contains a echo-servers implemented using differents languages/framewo
 
 ## Testing
 
-test_echo_server.py is a little simple utility to test echo servers. Run with Python >= 3.9.
+test_echo_server.py is a simple utility to test echo servers. Run with Python >= 3.9.
 
 Description of utility:
 
