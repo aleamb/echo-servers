@@ -27,9 +27,9 @@
 #define MAX_CLIENTS 256
 #define MAX_WORKERS 16
 #define MAX_BUF_WIN_STR_ERROR 64
-#define MAX_BUF_LOG_STR INET_ADDELEN + 6 + 48
 
-#pragma comment(lib, "ws2_32")
+
+//#pragma comment(lib, "ws2_32")
 
 enum OVERLAPPED_EVENT_TYPE
 {
