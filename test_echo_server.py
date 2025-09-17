@@ -37,12 +37,12 @@ program_epilog = (''
 
 
 def print_msg(msg):
-    print(msg, file=sys.stderr)
+    print('%f, %s' % (time.time(), msg), file=sys.stderr)
 
 
 def print_table_row(send_timestamp, finish_send_timestamp, current_time, response_time, data_length, data_len_received, thread_id, error):
-     print('%f, %f, %f, %f, %d, %d, %d, %i' % (send_timestamp, finish_send_timestamp, current_time, 
-                    response_time, data_length, data_len_received, thread_id, error))
+    print('%f,%f,%f,%f,%d,%d,%d,%i' % (send_timestamp, finish_send_timestamp, current_time, 
+                    response_time, data_length, data_len_received, thread_id, 1 if error else 0))
 
 def print_avg_time(thread_id, acc_time, n_msg):
     print('Average response time from thread %d: %f ms' % (thread_id, acc_time / n_msg,))
@@ -96,7 +96,7 @@ def test_echo(host, port, max_messages, dlength, generate_table, interval):
             while (not data_completed):
                 retry += 1
 
-                data_from_server = s.recv(min(len(data) - data_len_received, 1024))
+                data_from_server = s.recv(1024) #min(len(data) - data_len_received, 1024))
 
                 if not data_from_server:
                     print_msg('Server close connection')
