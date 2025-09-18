@@ -6,10 +6,10 @@
 
     In each test, it prints a row with columns:
     
-    Send timestamp, finish send timestamp, timestamo of receiving response data, 
-    response time, length of data sent, length of data received, thread id, error flag (0 if no error)
+    Send timestamp,finish send timestamp,timestamp of receiving response data, 
+    response time,length of data sent,length of data received,thread id,error flag (0 if no error)
     
-    The error is marked when sent data and received data are not equals. Last column set to 1 if error.
+    The error is marked when sent data and received data are not equals. Last column set to 1 if error occurs.
 
 """
  
@@ -33,7 +33,7 @@ program_epilog = (''
     'Send timestamp,finish send timestamp,timestamp of receiving response data,' 
     'response time,length of data sent,length of data received,thread id,error flag (0 if no error)'
     '\n\n'
-    'The error is marked when sent data and received data are not equals. Last column set to 1 if error')
+    'The error is marked when sent data and received data are not equals. Last column set to 1 if error occurs.')
 
 
 def print_msg(msg):
