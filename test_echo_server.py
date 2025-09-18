@@ -2,7 +2,7 @@
 
     
 """
-    Script to testing echo servers sending data in multiple ways.
+    Script to test echo servers sending data in multiple ways.
 
     In each test, it prints a row with columns:
     
@@ -30,8 +30,8 @@ __email__ = "jandroz@gmail.com"
 program_epilog = (''
     'Table format is:'
     '\n\n'
-    'Send timestamp, finish send timestamp, timestamo of receiving response data,' 
-    'response time, length of data sent, length of data received, thread id, error flag (0 if no error)'
+    'Send timestamp,finish send timestamp,timestamp of receiving response data,' 
+    'response time,length of data sent,length of data received,thread id,error flag (0 if no error)'
     '\n\n'
     'The error is marked when sent data and received data are not equals. Last column set to 1 if error')
 

@@ -21,7 +21,7 @@
 #include <winsock2.h>
 #include <ws2tcpip.h>
 
-#define PROGRAM_VERSION "echo-servers/c_winsock_iocp_thread v1.0.0"
+#define PROGRAM_VERSION "v1.0.0"
 
 #define DATA_BUFSIZE 2048
 #define MAX_CLIENTS 256
