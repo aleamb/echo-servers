@@ -257,7 +257,7 @@ DWORD WINAPI ServerWorkerThread(LPVOID pParameter)
                 LPEOVERLAPPED lpClientOverlapped = (LPEOVERLAPPED)overlappedResult;
 
                 if (lpClientOverlapped->eventType == EVENT_READ ||
-                    (lpClientOverlapped->eventType == EVENT_SEND && bytesTransferred > lpClientOverlapped->bytesSent))
+                    (lpClientOverlapped->eventType == EVENT_SEND && bytesTransferred < lpClientOverlapped->bytesSent))
                 {
                     clientInfo->wsaBuf.len = bytesTransferred;
                     ZeroMemory(&(clientInfo->overlapped), sizeof(EOVERLAPPED));
