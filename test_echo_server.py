@@ -67,6 +67,8 @@ def test_echo(host, port, max_messages, dlength, generate_table, interval):
 
         t2 = time.time()
 
+        error = False
+
         while not error and n_msg < max_messages:
             n_msg += 1
             data_received = b''
