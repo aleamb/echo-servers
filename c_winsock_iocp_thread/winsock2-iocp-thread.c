@@ -24,7 +24,7 @@
 #define PROGRAM_VERSION "v1.0.0"
 
 #define DATA_BUFSIZE 2048
-#define MAX_CLIENTS 256
+#define MAX_CLIENTS 10000
 #define MAX_WORKERS 16
 #define MAX_BUF_WIN_STR_ERROR 64
 
@@ -481,7 +481,7 @@ int main(int argc, char *argv[])
 
         if (GetNumClients(serverInfo) >= MAX_CLIENTS)
         {
-            fprintf(stderr, "Max clients exceeded");
+            fprintf(stderr, "Max clients exceeded\n");
             closesocket(acceptSocket);
             continue;
         }
