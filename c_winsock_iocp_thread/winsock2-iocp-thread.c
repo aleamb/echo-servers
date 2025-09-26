@@ -224,15 +224,15 @@ DWORD WINAPI ServerWorkerThread(LPVOID pParameter)
 
         2 - If packet is type READ, send data back to client.
             It's important set the bytes to sent in the overlapped structure.
-            That will be useful when dequeue same IO packet and check if all
+            That will be useful when dequeue an IO packet of send type and check if all
             data was sent.
 
         3 - As send is asynchronous, a packet type sent may arrive to queue.
             In this case, if bytes transfered are less than expected, send what
             remains too.
 
-        4 - If packet is SEND but not data pendign to send, queue a Read to continue
-            fetching data from client.
+        4 - If packet is SEND type but there is no data pending to send, queue a Read 
+            to continue fetching data from client.
     */
 
     while (!finish)
@@ -509,7 +509,7 @@ int main(int argc, char *argv[])
         {
 
             DWORD wsaLastError = WSAGetLastError();
-            // Overlapped sockets can be return SOCKET_ERROR on read and send. In this case, check if error is for IO_PENDING.
+            // Overlapped sockets can return SOCKET_ERROR when read or send. In this case, check if error is WSA_IO_PENDING.
             if (wsaLastError != WSA_IO_PENDING)
             {
                 // if starting reading fails, close connection client directly.
