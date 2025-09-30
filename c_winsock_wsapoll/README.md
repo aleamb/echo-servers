@@ -1,8 +1,6 @@
 # Echo server example.
 
-This example is an implementation of a echo-server in C Language using Winsock 2 and WSAPoll function.
-
-Based on example from book *Network Programming for Microsoft Windows, 2ed, by Anthony Jones and Jim Ohlund*
+This example is an implementation of a echo-server in C Language using Winsock 2 with WSAPoll function and a single thread.
 
 ## Build
 
@@ -10,7 +8,7 @@ Based on example from book *Network Programming for Microsoft Windows, 2ed, by A
 
 ```
 
-cl /W4 winsock2-iocp-thread.c /link ws2_32.lib
+cl /W4 winsock2-wsapoll.c /link ws2_32.lib
 
 ```
 
@@ -18,15 +16,13 @@ cl /W4 winsock2-iocp-thread.c /link ws2_32.lib
 
 ```
 
-gcc winsock2-iocp-thread.c -o winsock2-iocp-thread.exe -lws2_32
+gcc winsock2-wsapoll.c -o winsock2-wsapoll.exe -lws2_32
 
 ```
 
 ## Usage
 
 ```
-winsock2-iocp-thread <port>
+winsock2-wsapoll.exe <port>
 
 ```
-
-0

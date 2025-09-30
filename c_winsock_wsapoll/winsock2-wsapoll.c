@@ -6,10 +6,10 @@
     author: Alejandro Ambroa (jandroz@gmail.com)
 
     To compile (using Visual Studio command prompt):
-    cl /W4 winsock2-wsapoll.c /link ws2_32.lib,Mswsock.lib
+    cl /W4 winsock2-wsapoll.c /link Mswsock.lib
 
     or with mingw:
-    gcc -Wall -o winsock2-iocp-thread.exe winsock2-iocp-thread.c -lws2_32
+    gcc -Wall -o winsock2-wsapoll.exe winsock2-wsapoll.c -lws2_32
 
     Tested with Visual Studio 2022 and mingw64, Windows 11.
 */
@@ -25,9 +25,6 @@
 #define DATA_BUFSIZE 2048
 #define CONNECTION_REALLOC_SIZE 10
 
-#define _STRG(a) a
-#define LOG_FORMAT(a) "%s:%d -> " _STRG(a) ".\n"
-
 #pragma comment(lib, "ws2_32")
 #pragma comment(lib, "Mswsock")
 
@@ -35,6 +32,7 @@ typedef struct
 {
     WSABUF wsaBuf;
     OVERLAPPED overlapped;
+    LPSOCKADDR_IN clientAddr;
     DWORD bytesSent;
     DWORD bytesReceived;
 } CONNECTION, *LPCONNECTION;
@@ -45,15 +43,17 @@ typedef struct
     LPCONNECTION connectionsData;
     int nConnections;
     int capacity;
-
 } SERVER, *LPSERVER;
 
 char *StrWinError(DWORD errorCode, char *winErrorMsgBuffer);
 void PWError(const char *mainMsg, char *winErrorMsgBuffer);
+void ServerLog(LPCONNECTION lpConnection, const char* msg, ...);
 void Usage(const char *programName);
 LPSERVER CreateServer(SOCKET listenerSocket);
-LPCONNECTION RegisterConnection(LPSERVER server, SOCKET listenerSocket);
+LPCONNECTION RegisterConnection(LPSERVER server, SOCKET listenerSocket, LPSOCKADDR_IN clientAddr);
 void UnregisterClient(LPSERVER lpServer, int index);
+void RebuildServerConnectionsFds(LPSERVER server);
+void CloseServer(LPSERVER lpServer);
 
 static BOOL finish = FALSE;
 
@@ -86,19 +86,19 @@ LPSERVER CreateServer(SOCKET listenSocket)
 {
     LPSERVER lpServer = (LPSERVER)malloc(sizeof(SERVER));
     ZeroMemory(lpServer, sizeof(SERVER));
-    RegisterConnection(lpServer, listenSocket);
+    RegisterConnection(lpServer, listenSocket, NULL);
     return lpServer;
 }
 
-LPCONNECTION RegisterConnection(LPSERVER lpServer, SOCKET socket)
+LPCONNECTION RegisterConnection(LPSERVER lpServer, SOCKET socket, LPSOCKADDR_IN clientAddr)
 {
     if (lpServer->capacity < lpServer->nConnections + 1)
     {
-
         DWORD new_capacity = lpServer->capacity + CONNECTION_REALLOC_SIZE;
 
         lpServer->pollFds = (LPWSAPOLLFD)realloc((LPWSAPOLLFD)lpServer->pollFds, sizeof(WSAPOLLFD) * new_capacity);
-        ZeroMemory(&lpServer->pollFds[lpServer->nConnections], sizeof(WSAPOLLFD) * (new_capacity - lpServer->capacity));
+        ZeroMemory(&lpServer->pollFds[lpServer->capacity], sizeof(WSAPOLLFD) * (new_capacity - lpServer->capacity));
+
         lpServer->connectionsData = (LPCONNECTION)realloc((LPCONNECTION)lpServer->connectionsData, sizeof(CONNECTION) * new_capacity);
 
         lpServer->capacity = new_capacity;
@@ -115,6 +115,8 @@ LPCONNECTION RegisterConnection(LPSERVER lpServer, SOCKET socket)
     pConn->wsaBuf.len = DATA_BUFSIZE;
     pConn->bytesReceived = 0;
     pConn->bytesSent = 0;
+    pConn->clientAddr = (LPSOCKADDR_IN)malloc(sizeof(SOCKADDR_IN));
+    CopyMemory(&pConn->clientAddr, clientAddr, sizeof(SOCKADDR_IN));
     return pConn;
 }
 
@@ -126,8 +128,59 @@ void UnregisterClient(LPSERVER lpServer, int index)
     LPCONNECTION pConn = &lpServer->connectionsData[index];
     closesocket(lpServer->pollFds[index].fd);
     free(pConn->wsaBuf.buf);
+    free(pConn->clientAddr);
+    ZeroMemory(pConn, sizeof(CONNECTION));
     lpServer->pollFds[index].fd = INVALID_SOCKET;
 }
+
+void RebuildServerConnectionsFds(LPSERVER server)
+{
+    int j = 1;
+    for (int i = 1; i < server->nConnections; i++)
+    {
+        if (server->pollFds[i].fd != INVALID_SOCKET)
+        {
+            if (j != i)
+            {
+                server->pollFds[j] = server->pollFds[i];
+                server->connectionsData[j] = server->connectionsData[i];
+                server->pollFds[i].fd = INVALID_SOCKET;
+            }
+            j++;
+        }
+    }
+    server->nConnections = j;
+}
+
+void ServerLog(LPCONNECTION lpConnection, const char* msg, ...)
+{
+    char addrStr[INET_ADDRSTRLEN] = {0};
+    inet_ntop(AF_INET, &lpConnection->clientAddr->sin_addr, addrStr, INET_ADDRSTRLEN);
+    USHORT port = ntohs(lpConnection->clientAddr->sin_port);
+
+    va_list args;
+    va_start(args, msg);
+    printf("%s:%d -> ", addrStr, port);
+    vprintf(msg, args);
+    printf("\n");
+    va_end(args);
+}
+
+void CloseServer(LPSERVER lpServer)
+{
+    if (!lpServer)
+        return;
+
+    for (int i = 1; i < lpServer->nConnections; i++)
+    {
+        UnregisterClient(lpServer, i);
+    }
+
+    free(lpServer->pollFds);
+    free(lpServer->connectionsData);
+    free(lpServer);
+}
+
 
 int main(int argc, char *argv[])
 {
@@ -136,7 +189,6 @@ int main(int argc, char *argv[])
     INT port;
     SOCKET listenSocket;
     INT wsaOpResult;
-    INT exitStatus;
     SOCKADDR_IN remoteAddr;
     INT remoteLen;
     INT pollReturn;
@@ -170,7 +222,7 @@ int main(int argc, char *argv[])
     }
 
     // Create socket with overlapped I/O enabled.
-    listenSocket = WSASocket(AF_INET, SOCK_STREAM, IPPROTO_TCP, NULL, 0, WSA_FLAG_OVERLAPPED);
+    listenSocket = WSASocketW(AF_INET, SOCK_STREAM, IPPROTO_TCP, NULL, 0, WSA_FLAG_OVERLAPPED);
 
     if (listenSocket == INVALID_SOCKET)
     {
@@ -206,45 +258,24 @@ int main(int argc, char *argv[])
 
     server = CreateServer(listenSocket);
 
-    exitStatus = EXIT_SUCCESS;
     rebuild = FALSE;
 
     printf("Server listening on port %d\n", port);
 
-  
     while (!finish)
     {
         if (rebuild)
         {
-            int j = 1;
-            for (int i = 1; i < server->nConnections; i++)
-            {
-                if (server->pollFds[i].fd == INVALID_SOCKET)
-                {
-                    if (server->pollFds[j].fd != INVALID_SOCKET)
-                        j = i;
-                } else {
-                    if (j != i) {
-                        server->pollFds[j] = server->pollFds[i];
-                        server->connectionsData[j] = server->connectionsData[i];
-                        server->pollFds[i].fd = INVALID_SOCKET;
-                    } 
-                    j++;
-                }
-            }
-            server->nConnections = j;
+            RebuildServerConnectionsFds(server);
             rebuild = FALSE;
-         
         }
 
-        if (SOCKET_ERROR != (pollReturn = WSAPoll(server->pollFds, server->nConnections, -1)))
+        if ((pollReturn = WSAPoll(server->pollFds, server->nConnections, -1)) != SOCKET_ERROR)
         {
-
             DWORD nConnections = server->nConnections;
 
-            for (int connIndex = 0; connIndex < nConnections; connIndex++)
+            for (DWORD connIndex = 0; connIndex < nConnections; connIndex++)
             {
-
                 LPWSAPOLLFD pollFd = &server->pollFds[connIndex];
                 LPCONNECTION connData = &server->connectionsData[connIndex];
 
@@ -253,7 +284,6 @@ int main(int argc, char *argv[])
 
                 if ((pollFd->revents & POLLRDNORM) && (pollFd->fd == listenSocket))
                 {
-
                     SOCKET acceptSocket = WSAAccept(listenSocket, (SOCKADDR *)&remoteAddr, &remoteLen, NULL, (DWORD_PTR)NULL);
 
                     if (acceptSocket == INVALID_SOCKET)
@@ -264,8 +294,8 @@ int main(int argc, char *argv[])
                     }
                     else
                     {
-                        printf("Accepted connection from %s:%d\n", inet_ntoa(remoteAddr.sin_addr), ntohs(remoteAddr.sin_port));
-                        RegisterConnection(server, acceptSocket);
+                        LPCONNECTION newConnection = RegisterConnection(server, acceptSocket, &remoteAddr);
+                        ServerLog(newConnection, "Accepted connection");
                     }
                 }
                 else if (pollFd->revents & POLLRDNORM)
@@ -276,7 +306,7 @@ int main(int argc, char *argv[])
                     DWORD received = 0;
                     if (WSARecv(pollFd->fd, &(connData->wsaBuf), 1, &received, &flags, NULL, NULL) == SOCKET_ERROR)
                     {
-                        printf("Error fetching data: %s\n", StrWinError(WSAGetLastError(), winErrorMsgBuf));
+                        ServerLog(connData, "Error fetching data: %s", StrWinError(WSAGetLastError(), winErrorMsgBuf));
                     }
                     else
                     {
@@ -290,7 +320,7 @@ int main(int argc, char *argv[])
                             DWORD wsaLastError = WSAGetLastError();
                             if (wsaLastError != WSA_IO_PENDING)
                             {
-                                printf("Error sending data: %s\n", StrWinError(wsaLastError, winErrorMsgBuf));
+                                ServerLog(connData, "Error sending data: %s", StrWinError(wsaLastError, winErrorMsgBuf));
                             }
                             else
                             {
@@ -321,22 +351,23 @@ int main(int argc, char *argv[])
                                 DWORD wsaLastError = WSAGetLastError();
                                 if (wsaLastError != WSA_IO_PENDING)
                                 {
-                                    printf("Error sending data: %s\n", StrWinError(wsaLastError, winErrorMsgBuf));
+                                    ServerLog(connData, "Error sending data: %s", StrWinError(wsaLastError, winErrorMsgBuf));
                                 }
                             }
                         }
                     }
-                    else 
+                    else
                     {
                         DWORD overlappedOpResult = WSAGetLastError();
                         if (overlappedOpResult != WSA_IO_INCOMPLETE)
                         {
-                            printf("Error in overlapped send: %s\n", StrWinError(overlappedOpResult, winErrorMsgBuf));
+                            ServerLog(connData, "Error in overlapped send: %s", StrWinError(overlappedOpResult, winErrorMsgBuf));
                         }
                     }
-                } else if (pollFd->revents & (POLLHUP | POLLERR | POLLNVAL))
+                }
+                else if (pollFd->revents & (POLLHUP | POLLERR | POLLNVAL))
                 {
-                    printf("Closing connection on socket %d\n", (int)pollFd->fd);
+                    ServerLog(connData, "Closing connection.");
                     UnregisterClient(server, connIndex);
                     rebuild = TRUE;
                 }
@@ -344,13 +375,15 @@ int main(int argc, char *argv[])
         }
         else
         {
-            PWError("Error CALLING WSAPoll", winErrorMsgBuf);
+            PWError("Error calling WSAPoll", winErrorMsgBuf);
             finish = TRUE;
         }
     }
 
+    puts("Closing server...");
+    CloseServer(server);
     closesocket(listenSocket);
     WSACleanup();
 
-    return exitStatus;
+    return EXIT_SUCCESS;
 }
