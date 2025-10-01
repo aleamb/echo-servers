@@ -1,6 +1,6 @@
 # Implementations of an echo server
 
-This repo contains a echo-servers implemented using differents languages/frameworks.
+This repo contains multiple implementations of an echo-servers using differents languages/frameworks.
 
 ## Implementations
 
