@@ -27,6 +27,6 @@ winsock2-wsapoll.exe <port>
 
 ```
 
-[!IMPORTANT]
+> [!IMPORTANT]
 
-> WSAPoll function contains a bug in Microsoft Windows < 10. See [text](https://daniel.haxx.se/blog/2012/10/10/wsapoll-is-broken/)
+> WSAPoll function contains a bug in Microsoft Windows < 10. See [This post](https://daniel.haxx.se/blog/2012/10/10/wsapoll-is-broken/)
