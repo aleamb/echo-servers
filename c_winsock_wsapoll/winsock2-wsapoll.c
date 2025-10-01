@@ -1,7 +1,7 @@
 /*
     winsock2-wsapoll.c
 
-    This is a simple echo server using Winsock2 API and WSAPoll
+    This is a simple echo server using Winsock2 API and WSAPoll with a single thread.
 
     author: Alejandro Ambroa (jandroz@gmail.com)
 
@@ -15,8 +15,6 @@
 */
 
 #include <stdio.h>
-#include <stdlib.h>
-#include <winsock2.h>
 #include <ws2tcpip.h>
 #include <mswsock.h>
 
@@ -27,8 +25,8 @@
 #define POLLCLOSE (POLLERR | POLLHUP | POLLNVAL)
 #define START_CLIENT_CONNETIONS 2
 
-#pragma comment(lib, "ws2_32")
-#pragma comment(lib, "Mswsock")
+//#pragma comment(lib, "ws2_32")
+//#pragma comment(lib, "Mswsock")
 
 typedef enum
 {
@@ -36,6 +34,13 @@ typedef enum
     CLIENT_TYPE,
     CONTROL_TYPE
 } CONNECTION_TYPE;
+
+typedef enum
+{
+    INIT_SEND,
+    SENDING,
+    RETRY
+} SENDING_STATE;
 
 typedef struct
 {
@@ -45,6 +50,7 @@ typedef struct
     DWORD bytesSent;
     DWORD bytesReceived;
     CONNECTION_TYPE type;
+    SENDING_STATE sendingState;
 } CONNECTION, *LPCONNECTION;
 
 typedef struct
@@ -166,11 +172,11 @@ void UnregisterConnection(LPSERVER lpServer, int index)
     closesocket(lpServer->pollFds[index].fd);
     lpServer->pollFds[index].fd = INVALID_SOCKET;
     free(pConn->wsaBuf.buf);
-    if (pConn->clientAddr) {
+    if (pConn->clientAddr)
+    {
         free(pConn->clientAddr);
     }
     ZeroMemory(pConn, sizeof(CONNECTION));
-    
 }
 
 void RebuildServerConnectionsFds(LPSERVER lpServer)
@@ -329,17 +335,23 @@ int main(int argc, char *argv[])
                 if (pollFd->fd == INVALID_SOCKET)
                     continue;
 
-                if (connData->type == CONTROL_TYPE && (pollFd->revents & (POLLHUP | POLLERR | POLLNVAL)))
+                if (connData->type == CONTROL_TYPE && (pollFd->revents & POLLNVAL))
                 {
                     finish = TRUE;
+                }
+                else if (pollFd->revents & (POLLHUP | POLLERR | POLLNVAL))
+                {
+                    ServerLog(connData, "Closing connection.");
+                    UnregisterConnection(server, connIndex);
+                    rebuild = TRUE;
+                    processedEvents++;
                 }
                 else if ((pollFd->revents & POLLRDNORM) && (connData->type == SERVER_TYPE))
                 {
                     SOCKET acceptSocket = WSAAccept(listenSocket, (SOCKADDR *)&remoteAddr, &remoteLen, NULL, (DWORD_PTR)NULL);
                     if (acceptSocket == INVALID_SOCKET)
                     {
-                        DWORD wsaError = WSAGetLastError();
-                        SetLastError(wsaError);
+                        SetLastError(WSAGetLastError());
                         PWError("Error accepting connection.", winErrorMsgBuf);
                     }
                     else
@@ -353,76 +365,71 @@ int main(int argc, char *argv[])
                 {
                     ZeroMemory(connData->wsaBuf.buf, DATA_BUFSIZE);
                     connData->wsaBuf.len = DATA_BUFSIZE;
-                    DWORD flags = 0;
                     DWORD received = 0;
+                    DWORD flags = 0;
+
                     if (WSARecv(pollFd->fd, &(connData->wsaBuf), 1, &received, &flags, NULL, NULL) == SOCKET_ERROR)
                     {
                         ServerLog(connData, "Error fetching data: %s", StrWinError(WSAGetLastError(), winErrorMsgBuf));
                     }
                     else
                     {
-                        DWORD bytesSent = 0;
+                        connData->bytesReceived = received;
+                        connData->bytesSent = 0;
+                        connData->sendingState = INIT_SEND;
                         connData->wsaBuf.len = received;
-                        flags = 0;
+                        pollFd->events = POLLWRNORM;
+                    }
+                    processedEvents++;
+                }
+                else if (pollFd->revents & POLLWRNORM)
+                {
+                    switch (connData->sendingState)
+                    {
+                    case INIT_SEND:
+                    case RETRY:
+                        DWORD flags = 0;
+
+                        connData->wsaBuf.buf += connData->bytesSent;
+                        connData->wsaBuf.len -= connData->bytesSent;
                         ZeroMemory(&connData->overlapped, sizeof(OVERLAPPED));
-                        INT sendReturn = WSASend(pollFd->fd, &(connData->wsaBuf), 1, &bytesSent, flags, (LPOVERLAPPED)&connData->overlapped, NULL);
+                        INT sendReturn = WSASend(pollFd->fd, &(connData->wsaBuf), 1, NULL, flags, (LPOVERLAPPED)&connData->overlapped, NULL);
                         if (sendReturn == SOCKET_ERROR)
                         {
                             DWORD wsaLastError = WSAGetLastError();
                             if (wsaLastError != WSA_IO_PENDING)
                             {
                                 ServerLog(connData, "Error sending data: %s", StrWinError(wsaLastError, winErrorMsgBuf));
+                            } else {
+                                connData->sendingState = SENDING;
+                            }
+                        } else {
+                            pollFd->events = POLLRDNORM;
+                        }
+                        break;
+                    case SENDING:
+                        if (WSAGetOverlappedResult(pollFd->fd, (LPOVERLAPPED)&connData->overlapped, &connData->bytesSent, FALSE, NULL))
+                        {
+                            if (connData->bytesSent == connData->wsaBuf.len)
+                            {
+                                pollFd->events = POLLRDNORM;
                             }
                             else
                             {
-                                pollFd->revents = POLLWRNORM;
+                                connData->sendingState = RETRY;
                             }
-                        }
-                    }
-                    processedEvents++;
-                }
-                else if (pollFd->revents & POLLWRNORM)
-                {
-                    if (WSAGetOverlappedResult(pollFd->fd, (LPOVERLAPPED)&connData->overlapped, &connData->bytesSent, FALSE, NULL))
-                    {
-                        if (connData->bytesSent == connData->wsaBuf.len)
-                        {
-                            pollFd->events = POLLRDNORM;
                         }
                         else
                         {
-                            connData->wsaBuf.buf += connData->bytesSent;
-                            connData->wsaBuf.len -= connData->bytesSent;
-                            DWORD bytesSent = 0;
-                            DWORD flags = 0;
-                            ZeroMemory(&connData->overlapped, sizeof(OVERLAPPED));
-                            INT sendReturn = WSASend(pollFd->fd, &(connData->wsaBuf), 1, &bytesSent, flags, (LPOVERLAPPED)&connData->overlapped, NULL);
-                            if (sendReturn == SOCKET_ERROR)
+                            DWORD overlappedOpResult = WSAGetLastError();
+                            if (overlappedOpResult != WSA_IO_INCOMPLETE)
                             {
-                                DWORD wsaLastError = WSAGetLastError();
-                                if (wsaLastError != WSA_IO_PENDING)
-                                {
-                                    ServerLog(connData, "Error sending data: %s", StrWinError(wsaLastError, winErrorMsgBuf));
-                                }
+                                ServerLog(connData, "Error in overlapped send: %s", StrWinError(overlappedOpResult, winErrorMsgBuf));
+                                pollFd->events = POLLRDNORM;
                             }
                         }
+                        processedEvents++;
                     }
-                    else
-                    {
-                        DWORD overlappedOpResult = WSAGetLastError();
-                        if (overlappedOpResult != WSA_IO_INCOMPLETE)
-                        {
-                            ServerLog(connData, "Error in overlapped send: %s", StrWinError(overlappedOpResult, winErrorMsgBuf));
-                        }
-                    }
-                    processedEvents++;
-                }
-                else if (pollFd->revents & (POLLHUP | POLLERR | POLLNVAL))
-                {
-                    ServerLog(connData, "Closing connection.");
-                    UnregisterConnection(server, connIndex);
-                    rebuild = TRUE;
-                    processedEvents++;
                 }
             }
         }
