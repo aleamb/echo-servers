@@ -130,14 +130,14 @@ LPCONNECTION RegisterConnection(LPSERVER lpServer, SOCKET socket, LPSOCKADDR_IN 
         DWORD new_capacity = lpServer->capacity + CONNECTION_REALLOC_SIZE;
 
         lpServer->pollFds = (LPWSAPOLLFD)realloc((LPWSAPOLLFD)lpServer->pollFds, sizeof(WSAPOLLFD) * new_capacity);
-        ZeroMemory(&lpServer->pollFds[lpServer->capacity], sizeof(WSAPOLLFD) * (new_capacity - lpServer->capacity));
-
         lpServer->connectionsData = (LPCONNECTION)realloc((LPCONNECTION)lpServer->connectionsData, sizeof(CONNECTION) * new_capacity);
 
         lpServer->capacity = new_capacity;
     }
     LPWSAPOLLFD pfd = &lpServer->pollFds[lpServer->nConnections];
     LPCONNECTION pConn = &lpServer->connectionsData[lpServer->nConnections];
+    ZeroMemory(pConn, sizeof(CONNECTION));
+
     lpServer->nConnections++;
 
     pfd->fd = socket;
