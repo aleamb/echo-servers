@@ -24,7 +24,7 @@
 #define PROGRAM_VERSION "v1.0.0"
 
 #define DATA_BUFSIZE 2048
-#define MAX_CLIENTS 10000
+#define MAX_CLIENTS 15000
 #define MAX_WORKERS 16
 #define MAX_BUF_WIN_STR_ERROR 64
 
@@ -112,9 +112,9 @@ void PWError(const char *mainMsg, char *winErrorMsgBuffer)
 LPSERVER_INFO CreateServer(SOCKET listenSocket)
 {
     LPSERVER_INFO server;
-    server = (LPSERVER_INFO)GlobalAlloc(GPTR, sizeof(SERVER_INFO));
+    server = (LPSERVER_INFO)malloc(sizeof(SERVER_INFO));
     ZeroMemory(server, sizeof(SERVER_INFO));
-    server->clients = (LPCLIENT_INFO *)GlobalAlloc(GPTR, MAX_CLIENTS * sizeof(LPCLIENT_INFO));
+    server->clients = (LPCLIENT_INFO *)malloc(MAX_CLIENTS * sizeof(LPCLIENT_INFO));
     server->listenSocket = listenSocket;
     InitializeCriticalSection(&server->criticalSection);
     return server;
@@ -124,7 +124,7 @@ void CloseServer(LPSERVER_INFO lpServerInfo)
 {
     if (!lpServerInfo)
         return;
-    InitializeCriticalSection(&lpServerInfo->criticalSection);
+    EnterCriticalSection(&lpServerInfo->criticalSection);
     // unregister clients.
     for (INT c = 0; c < MAX_CLIENTS; c++)
     {
@@ -137,18 +137,18 @@ void CloseServer(LPSERVER_INFO lpServerInfo)
     LeaveCriticalSection(&lpServerInfo->criticalSection);
     DeleteCriticalSection(&lpServerInfo->criticalSection);
     closesocket(lpServerInfo->listenSocket);
-    GlobalFree(lpServerInfo->clients);
-    GlobalFree(lpServerInfo);
+    free(lpServerInfo->clients);
+    free(lpServerInfo);
 }
 
 LPCLIENT_INFO RegisterClient(LPSERVER_INFO pServerInfo, SOCKET clientSocket, LPSOCKADDR_IN remoteClientAddrInfo, int remoteLen)
 {
-    LPCLIENT_INFO clientInfo = (LPCLIENT_INFO)GlobalAlloc(GPTR, sizeof(CLIENT_INFO));
+    LPCLIENT_INFO clientInfo = (LPCLIENT_INFO)malloc(sizeof(CLIENT_INFO));
     ZeroMemory(clientInfo, sizeof(CLIENT_INFO));
 
-    clientInfo->wsaBuf.buf = (CHAR *)GlobalAlloc(GPTR, DATA_BUFSIZE);
+    clientInfo->wsaBuf.buf = (CHAR *)malloc(DATA_BUFSIZE);
     clientInfo->wsaBuf.len = DATA_BUFSIZE;
-    ZeroMemory(clientInfo->wsaBuf.buf, sizeof(DATA_BUFSIZE));
+    ZeroMemory(clientInfo->wsaBuf.buf, DATA_BUFSIZE);
 
     clientInfo->socket = clientSocket;
     CopyMemory(&clientInfo->clientAddr, remoteClientAddrInfo, remoteLen);
@@ -185,8 +185,8 @@ void UnregisterClient(LPSERVER_INFO lpServerInfo, LPCLIENT_INFO clientInfo)
     if (!clientInfo)
         return;
     closesocket(clientInfo->socket);
-    GlobalFree(clientInfo->wsaBuf.buf);
-    GlobalFree(clientInfo);
+    free(clientInfo->wsaBuf.buf);
+    free(clientInfo);
 
     EnterCriticalSection(&lpServerInfo->criticalSection);
     lpServerInfo->nClients--;
