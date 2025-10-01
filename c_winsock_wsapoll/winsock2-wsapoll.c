@@ -24,9 +24,18 @@
 #define MAX_BUF_WIN_STR_ERROR 64
 #define DATA_BUFSIZE 2048
 #define CONNECTION_REALLOC_SIZE 10
+#define POLLCLOSE (POLLERR | POLLHUP | POLLNVAL)
+#define START_CLIENT_CONNETIONS 2
 
 #pragma comment(lib, "ws2_32")
 #pragma comment(lib, "Mswsock")
+
+typedef enum
+{
+    SERVER_TYPE,
+    CLIENT_TYPE,
+    CONTROL_TYPE
+} CONNECTION_TYPE;
 
 typedef struct
 {
@@ -35,6 +44,7 @@ typedef struct
     LPSOCKADDR_IN clientAddr;
     DWORD bytesSent;
     DWORD bytesReceived;
+    CONNECTION_TYPE type;
 } CONNECTION, *LPCONNECTION;
 
 typedef struct
@@ -47,15 +57,21 @@ typedef struct
 
 char *StrWinError(DWORD errorCode, char *winErrorMsgBuffer);
 void PWError(const char *mainMsg, char *winErrorMsgBuffer);
-void ServerLog(LPCONNECTION lpConnection, const char* msg, ...);
+void ServerLog(LPCONNECTION lpConnection, const char *msg, ...);
 void Usage(const char *programName);
 LPSERVER CreateServer(SOCKET listenerSocket);
-LPCONNECTION RegisterConnection(LPSERVER server, SOCKET listenerSocket, LPSOCKADDR_IN clientAddr);
-void UnregisterClient(LPSERVER lpServer, int index);
-void RebuildServerConnectionsFds(LPSERVER server);
+LPCONNECTION RegisterConnection(
+    LPSERVER server,
+    SOCKET listenerSocket,
+    LPSOCKADDR_IN clientAddr,
+    CONNECTION_TYPE type);
+void UnregisterConnection(LPSERVER lpServer, int index);
+void RebuildServerConnectionsFds(LPSERVER lpServer);
+void RequestCloseServer(LPSERVER lpServer);
 void CloseServer(LPSERVER lpServer);
+BOOL WINAPI CtrlHandler(DWORD fdwCtrlType);
 
-static BOOL finish = FALSE;
+static LPSERVER server;
 
 char *StrWinError(DWORD errorCode, char *winErrorMsgBuffer)
 {
@@ -69,6 +85,20 @@ char *StrWinError(DWORD errorCode, char *winErrorMsgBuffer)
         snprintf(winErrorMsgBuffer, MAX_BUF_WIN_STR_ERROR, "Unknown error %ld", errorCode);
     }
     return winErrorMsgBuffer;
+}
+
+void ServerLog(LPCONNECTION lpConnection, const char *msg, ...)
+{
+    char addrStr[INET_ADDRSTRLEN] = {0};
+    inet_ntop(AF_INET, &lpConnection->clientAddr->sin_addr, addrStr, INET_ADDRSTRLEN);
+    USHORT port = ntohs(lpConnection->clientAddr->sin_port);
+
+    va_list args;
+    va_start(args, msg);
+    printf("%s:%d -> ", addrStr, port);
+    vprintf(msg, args);
+    printf("\n");
+    va_end(args);
 }
 
 void PWError(const char *mainMsg, char *winErrorMsgBuffer)
@@ -86,11 +116,14 @@ LPSERVER CreateServer(SOCKET listenSocket)
 {
     LPSERVER lpServer = (LPSERVER)malloc(sizeof(SERVER));
     ZeroMemory(lpServer, sizeof(SERVER));
-    RegisterConnection(lpServer, listenSocket, NULL);
+    RegisterConnection(lpServer, listenSocket, NULL, SERVER_TYPE);
+    // Register a control socket to stopping WSAPoll when needed.
+    SOCKET controlSock = WSASocketW(AF_INET, SOCK_DGRAM, IPPROTO_UDP, NULL, 0, WSA_FLAG_OVERLAPPED);
+    RegisterConnection(lpServer, controlSock, NULL, CONTROL_TYPE);
     return lpServer;
 }
 
-LPCONNECTION RegisterConnection(LPSERVER lpServer, SOCKET socket, LPSOCKADDR_IN clientAddr)
+LPCONNECTION RegisterConnection(LPSERVER lpServer, SOCKET socket, LPSOCKADDR_IN clientAddr, CONNECTION_TYPE type)
 {
     if (lpServer->capacity < lpServer->nConnections + 1)
     {
@@ -115,55 +148,48 @@ LPCONNECTION RegisterConnection(LPSERVER lpServer, SOCKET socket, LPSOCKADDR_IN 
     pConn->wsaBuf.len = DATA_BUFSIZE;
     pConn->bytesReceived = 0;
     pConn->bytesSent = 0;
-    pConn->clientAddr = (LPSOCKADDR_IN)malloc(sizeof(SOCKADDR_IN));
-    CopyMemory(&pConn->clientAddr, clientAddr, sizeof(SOCKADDR_IN));
+    if (clientAddr)
+    {
+        pConn->clientAddr = (LPSOCKADDR_IN)malloc(sizeof(SOCKADDR_IN));
+        CopyMemory(pConn->clientAddr, clientAddr, sizeof(SOCKADDR_IN));
+    }
+    pConn->type = type;
     return pConn;
 }
 
-void UnregisterClient(LPSERVER lpServer, int index)
+void UnregisterConnection(LPSERVER lpServer, int index)
 {
     if (index < 0 || index >= lpServer->nConnections)
         return;
 
     LPCONNECTION pConn = &lpServer->connectionsData[index];
     closesocket(lpServer->pollFds[index].fd);
-    free(pConn->wsaBuf.buf);
-    free(pConn->clientAddr);
-    ZeroMemory(pConn, sizeof(CONNECTION));
     lpServer->pollFds[index].fd = INVALID_SOCKET;
+    free(pConn->wsaBuf.buf);
+    if (pConn->clientAddr) {
+        free(pConn->clientAddr);
+    }
+    ZeroMemory(pConn, sizeof(CONNECTION));
+    
 }
 
-void RebuildServerConnectionsFds(LPSERVER server)
+void RebuildServerConnectionsFds(LPSERVER lpServer)
 {
-    int j = 1;
-    for (int i = 1; i < server->nConnections; i++)
+    int j = START_CLIENT_CONNETIONS; // skip listener socket and wsapoll control socket, both in beginning of array.
+    for (int i = START_CLIENT_CONNETIONS; i < lpServer->nConnections; i++)
     {
-        if (server->pollFds[i].fd != INVALID_SOCKET)
+        if (lpServer->pollFds[i].fd != INVALID_SOCKET)
         {
             if (j != i)
             {
-                server->pollFds[j] = server->pollFds[i];
-                server->connectionsData[j] = server->connectionsData[i];
-                server->pollFds[i].fd = INVALID_SOCKET;
+                lpServer->pollFds[j] = lpServer->pollFds[i];
+                lpServer->connectionsData[j] = lpServer->connectionsData[i];
+                lpServer->pollFds[i].fd = INVALID_SOCKET;
             }
             j++;
         }
     }
-    server->nConnections = j;
-}
-
-void ServerLog(LPCONNECTION lpConnection, const char* msg, ...)
-{
-    char addrStr[INET_ADDRSTRLEN] = {0};
-    inet_ntop(AF_INET, &lpConnection->clientAddr->sin_addr, addrStr, INET_ADDRSTRLEN);
-    USHORT port = ntohs(lpConnection->clientAddr->sin_port);
-
-    va_list args;
-    va_start(args, msg);
-    printf("%s:%d -> ", addrStr, port);
-    vprintf(msg, args);
-    printf("\n");
-    va_end(args);
+    lpServer->nConnections = j;
 }
 
 void CloseServer(LPSERVER lpServer)
@@ -171,9 +197,9 @@ void CloseServer(LPSERVER lpServer)
     if (!lpServer)
         return;
 
-    for (int i = 1; i < lpServer->nConnections; i++)
+    for (int i = lpServer->nConnections - 1; i >= 0; i--)
     {
-        UnregisterClient(lpServer, i);
+        UnregisterConnection(lpServer, i);
     }
 
     free(lpServer->pollFds);
@@ -181,6 +207,23 @@ void CloseServer(LPSERVER lpServer)
     free(lpServer);
 }
 
+void RequestCloseServer(LPSERVER lpServer)
+{
+    closesocket(lpServer->pollFds[1].fd);
+}
+
+BOOL WINAPI CtrlHandler(DWORD fdwCtrlType)
+{
+    switch (fdwCtrlType)
+    {
+    case CTRL_C_EVENT:
+        puts("Received Ctrl-C signal");
+        RequestCloseServer(server);
+        return TRUE;
+    default:
+        return FALSE;
+    }
+}
 
 int main(int argc, char *argv[])
 {
@@ -192,9 +235,9 @@ int main(int argc, char *argv[])
     SOCKADDR_IN remoteAddr;
     INT remoteLen;
     INT pollReturn;
-    LPSERVER server;
     BOOL rebuild;
     CHAR winErrorMsgBuf[MAX_BUF_WIN_STR_ERROR];
+    BOOL finish;
 
     puts(PROGRAM_VERSION);
 
@@ -259,6 +302,9 @@ int main(int argc, char *argv[])
     server = CreateServer(listenSocket);
 
     rebuild = FALSE;
+    finish = FALSE;
+
+    SetConsoleCtrlHandler(CtrlHandler, TRUE);
 
     printf("Server listening on port %d\n", port);
 
@@ -273,8 +319,9 @@ int main(int argc, char *argv[])
         if ((pollReturn = WSAPoll(server->pollFds, server->nConnections, -1)) != SOCKET_ERROR)
         {
             DWORD nConnections = server->nConnections;
+            INT processedEvents = 0;
 
-            for (DWORD connIndex = 0; connIndex < nConnections; connIndex++)
+            for (DWORD connIndex = 0; connIndex < nConnections && processedEvents < pollReturn; connIndex++)
             {
                 LPWSAPOLLFD pollFd = &server->pollFds[connIndex];
                 LPCONNECTION connData = &server->connectionsData[connIndex];
@@ -282,10 +329,13 @@ int main(int argc, char *argv[])
                 if (pollFd->fd == INVALID_SOCKET)
                     continue;
 
-                if ((pollFd->revents & POLLRDNORM) && (pollFd->fd == listenSocket))
+                if (connData->type == CONTROL_TYPE && (pollFd->revents & (POLLHUP | POLLERR | POLLNVAL)))
+                {
+                    finish = TRUE;
+                }
+                else if ((pollFd->revents & POLLRDNORM) && (connData->type == SERVER_TYPE))
                 {
                     SOCKET acceptSocket = WSAAccept(listenSocket, (SOCKADDR *)&remoteAddr, &remoteLen, NULL, (DWORD_PTR)NULL);
-
                     if (acceptSocket == INVALID_SOCKET)
                     {
                         DWORD wsaError = WSAGetLastError();
@@ -294,9 +344,10 @@ int main(int argc, char *argv[])
                     }
                     else
                     {
-                        LPCONNECTION newConnection = RegisterConnection(server, acceptSocket, &remoteAddr);
+                        LPCONNECTION newConnection = RegisterConnection(server, acceptSocket, &remoteAddr, CLIENT_TYPE);
                         ServerLog(newConnection, "Accepted connection");
                     }
+                    processedEvents++;
                 }
                 else if (pollFd->revents & POLLRDNORM)
                 {
@@ -328,10 +379,10 @@ int main(int argc, char *argv[])
                             }
                         }
                     }
+                    processedEvents++;
                 }
                 else if (pollFd->revents & POLLWRNORM)
                 {
-
                     if (WSAGetOverlappedResult(pollFd->fd, (LPOVERLAPPED)&connData->overlapped, &connData->bytesSent, FALSE, NULL))
                     {
                         if (connData->bytesSent == connData->wsaBuf.len)
@@ -364,12 +415,14 @@ int main(int argc, char *argv[])
                             ServerLog(connData, "Error in overlapped send: %s", StrWinError(overlappedOpResult, winErrorMsgBuf));
                         }
                     }
+                    processedEvents++;
                 }
                 else if (pollFd->revents & (POLLHUP | POLLERR | POLLNVAL))
                 {
                     ServerLog(connData, "Closing connection.");
-                    UnregisterClient(server, connIndex);
+                    UnregisterConnection(server, connIndex);
                     rebuild = TRUE;
+                    processedEvents++;
                 }
             }
         }
@@ -382,7 +435,6 @@ int main(int argc, char *argv[])
 
     puts("Closing server...");
     CloseServer(server);
-    closesocket(listenSocket);
     WSACleanup();
 
     return EXIT_SUCCESS;
