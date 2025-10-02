@@ -28,7 +28,6 @@
 #define MAX_WORKERS 16
 #define MAX_BUF_WIN_STR_ERROR 64
 
-
 //#pragma comment(lib, "ws2_32")
 
 enum OVERLAPPED_EVENT_TYPE
@@ -72,12 +71,12 @@ LPCLIENT_INFO RegisterClient(LPSERVER_INFO lpServerInfo, SOCKET clientSocket, LP
 void UnregisterClient(LPSERVER_INFO lpServerInfo, LPCLIENT_INFO clientInfo);
 void CloseServer(LPSERVER_INFO lpServerInfo);
 INT GetNumClients(LPSERVER_INFO lpServerInfo);
-void ExitHandler(void);
 BOOL WINAPI CtrlHandler(DWORD fdwCtrlType);
 void Cleanup();
 void Usage(const char *programName);
 char *StrWinError(DWORD errorCode, char *winErrorMsgBuffer);
 void PWError(const char *mainMsg, char *winErrorMsgBuffer);
+BOOL OverlappedOperationError(DWORD overlappedResultCode, LPDWORD wsaError);
 
 #define _STRG(a) a
 #define LOG_FORMAT(a) "%s:%d -> " _STRG(a) ".\n"
@@ -109,12 +108,26 @@ void PWError(const char *mainMsg, char *winErrorMsgBuffer)
     fprintf(stderr, "%s : %s (%ld)\n", mainMsg, StrWinError(lastError, winErrorMsgBuffer), lastError);
 }
 
+BOOL OverlappedOperationError(DWORD overlappedResultCode, LPDWORD wsaError)
+{
+    if (overlappedResultCode == 0)
+    {
+        return FALSE;
+    }
+    if (overlappedResultCode == SOCKET_ERROR)
+    {
+        *wsaError = WSAGetLastError();
+    }
+    return overlappedResultCode == SOCKET_ERROR && *wsaError != WSA_IO_PENDING;
+}
+
 LPSERVER_INFO CreateServer(SOCKET listenSocket)
 {
     LPSERVER_INFO server;
     server = (LPSERVER_INFO)malloc(sizeof(SERVER_INFO));
     ZeroMemory(server, sizeof(SERVER_INFO));
     server->clients = (LPCLIENT_INFO *)malloc(MAX_CLIENTS * sizeof(LPCLIENT_INFO));
+    ZeroMemory(server->clients, MAX_CLIENTS * sizeof(LPCLIENT_INFO));
     server->listenSocket = listenSocket;
     InitializeCriticalSection(&server->criticalSection);
     return server;
@@ -155,7 +168,7 @@ LPCLIENT_INFO RegisterClient(LPSERVER_INFO pServerInfo, SOCKET clientSocket, LPS
 
     inet_ntop(AF_INET, &remoteClientAddrInfo->sin_addr, clientInfo->addressStr, INET_ADDRSTRLEN);
     clientInfo->port = htons(remoteClientAddrInfo->sin_port);
-		
+
     EnterCriticalSection(&pServerInfo->criticalSection);
     for (INT c = 0; c < MAX_CLIENTS; c++)
     {
@@ -200,13 +213,13 @@ void UnregisterClient(LPSERVER_INFO lpServerInfo, LPCLIENT_INFO clientInfo)
     LeaveCriticalSection(&lpServerInfo->criticalSection);
 }
 
+// Worker code. Server main logic.
 DWORD WINAPI ServerWorkerThread(LPVOID pParameter)
 {
     LPCLIENT_INFO clientInfo;
     LPSERVER_INFO serverInfo;
     DWORD bytesTransferred;
     LPOVERLAPPED overlappedResult;
-    BOOL iocpOk;
     BOOL finish;
     CHAR winErrorMsgBuf[MAX_BUF_WIN_STR_ERROR];
 
@@ -231,78 +244,76 @@ DWORD WINAPI ServerWorkerThread(LPVOID pParameter)
             In this case, if bytes transfered are less than expected, send what
             remains too.
 
-        4 - If packet is SEND type but there is no data pending to send, queue a Read 
+        4 - If packet is SEND type but there is no data pending to send, queue a Read
             to continue fetching data from client.
     */
 
     while (!finish)
     {
-        iocpOk = GetQueuedCompletionStatus(serverInfo->completionPort,
-                                           &bytesTransferred,
-                                           (PULONG_PTR)&clientInfo,
-                                           (LPOVERLAPPED *)&overlappedResult,
-                                           INFINITE);
-
-        DWORD iocpLastError = WSAGetLastError();
-
-        if (iocpOk)
+        if (GetQueuedCompletionStatus(serverInfo->completionPort,
+                                      &bytesTransferred,
+                                      (PULONG_PTR)&clientInfo,
+                                      (LPOVERLAPPED *)&overlappedResult,
+                                      INFINITE))
         {
             if (bytesTransferred == 0)
             {
                 printf(LOG_FORMAT("Client close connection"), clientInfo->addressStr, clientInfo->port);
                 UnregisterClient(serverInfo, clientInfo);
+                continue;
+            }
+
+            LPEOVERLAPPED lpClientOverlapped = (LPEOVERLAPPED)overlappedResult;
+
+            if (lpClientOverlapped->eventType == EVENT_READ ||
+                (lpClientOverlapped->eventType == EVENT_SEND && bytesTransferred < lpClientOverlapped->bytesSent))
+            {
+                clientInfo->wsaBuf.len = bytesTransferred;
+                ZeroMemory(&(clientInfo->overlapped), sizeof(EOVERLAPPED));
+                clientInfo->overlapped.eventType = EVENT_SEND;
+                clientInfo->overlapped.bytesSent = bytesTransferred;
+                DWORD wsaError;
+                DWORD ovlpOpResult = WSASend(clientInfo->socket, &(clientInfo->wsaBuf), 1, NULL, 0, (LPOVERLAPPED) & (clientInfo->overlapped), NULL);
+
+                if (OverlappedOperationError(ovlpOpResult, &wsaError))
+                {
+                    printf(LOG_FORMAT("Error sending data: %s. Closing connection"), clientInfo->addressStr, clientInfo->port, StrWinError(wsaError, winErrorMsgBuf));
+                    UnregisterClient(serverInfo, clientInfo);
+                }
             }
             else
             {
-                LPEOVERLAPPED lpClientOverlapped = (LPEOVERLAPPED)overlappedResult;
+                ZeroMemory(&(clientInfo->overlapped), sizeof(EOVERLAPPED));
+                ZeroMemory(clientInfo->wsaBuf.buf, DATA_BUFSIZE);
+                clientInfo->wsaBuf.len = DATA_BUFSIZE;
+                clientInfo->overlapped.eventType = EVENT_READ;
 
-                if (lpClientOverlapped->eventType == EVENT_READ ||
-                    (lpClientOverlapped->eventType == EVENT_SEND && bytesTransferred < lpClientOverlapped->bytesSent))
-                {
-                    clientInfo->wsaBuf.len = bytesTransferred;
-                    ZeroMemory(&(clientInfo->overlapped), sizeof(EOVERLAPPED));
-                    clientInfo->overlapped.eventType = EVENT_SEND;
-                    clientInfo->overlapped.bytesSent = bytesTransferred;
-                    if (WSASend(clientInfo->socket, &(clientInfo->wsaBuf), 1, NULL, 0, (LPOVERLAPPED) & (clientInfo->overlapped), NULL) == SOCKET_ERROR)
-                    {
-                        DWORD wsaLastError = WSAGetLastError();
-                        if (wsaLastError != WSA_IO_PENDING)
-                        {
-                            printf(LOG_FORMAT("Error sending data: %s. Closing connection"),
-                                   clientInfo->addressStr, clientInfo->port, StrWinError(wsaLastError, winErrorMsgBuf));
-                            UnregisterClient(serverInfo, clientInfo);
-                        }
-                    }
-                }
-                else
-                {
-                    ZeroMemory(&(clientInfo->overlapped), sizeof(EOVERLAPPED));
-                    ZeroMemory(clientInfo->wsaBuf.buf, DATA_BUFSIZE);
-                    clientInfo->wsaBuf.len = DATA_BUFSIZE;
-                    clientInfo->overlapped.eventType = EVENT_READ;
-                    DWORD flags;
-                    if (WSARecv(clientInfo->socket, &(clientInfo->wsaBuf), 1, NULL,
-                                &flags, (LPOVERLAPPED) & (clientInfo->overlapped), NULL) == SOCKET_ERROR)
-                    {
-                        DWORD wsaLastError = WSAGetLastError();
-                        if (wsaLastError != WSA_IO_PENDING)
-                        {
-                            printf(LOG_FORMAT("Error fetching data: %s. Closing connection"),
-                                   clientInfo->addressStr, clientInfo->port, StrWinError(wsaLastError, winErrorMsgBuf));
+                DWORD wsaError;
+                DWORD flags = 0;
+                DWORD opOvlResult = WSARecv(clientInfo->socket, &(clientInfo->wsaBuf), 1, NULL, &flags, (LPOVERLAPPED) & (clientInfo->overlapped), NULL);
 
-                            UnregisterClient(serverInfo, clientInfo);
-                        }
-                    }
+                if (OverlappedOperationError(opOvlResult, &wsaError))
+                {
+                    printf(LOG_FORMAT("Error fetching data: %s. Closing connection"), clientInfo->addressStr, clientInfo->port, StrWinError(wsaError, winErrorMsgBuf));
+                    UnregisterClient(serverInfo, clientInfo);
                 }
             }
         }
         else
         {
-            if (iocpLastError == ERROR_ABANDONED_WAIT_0) {
+            DWORD iocpLastError = WSAGetLastError();
+
+            // triggered when thread is killed due to the application finish.
+            if (iocpLastError == ERROR_ABANDONED_WAIT_0)
+            {
                 finish = TRUE;
-            } else {
+            }
+            else
+            {
+                SetLastError(iocpLastError);
                 PWError("IOCP error in worker thread", winErrorMsgBuf);
-                if (clientInfo) {
+                if (clientInfo)
+                {
                     UnregisterClient(serverInfo, clientInfo);
                 }
             }
@@ -349,18 +360,13 @@ void Cleanup()
     }
 }
 
-void ExitHandler(void)
-{
-    puts("Closing server...");
-    Cleanup();
-}
-
 BOOL WINAPI CtrlHandler(DWORD fdwCtrlType)
 {
     switch (fdwCtrlType)
     {
     case CTRL_C_EVENT:
-        ExitHandler();
+        puts("Closing server...");
+        Cleanup();
         return FALSE;
     default:
         return FALSE;
@@ -396,10 +402,8 @@ int main(int argc, char *argv[])
         return EXIT_FAILURE;
     }
 
-    atexit(ExitHandler);
     SetConsoleCtrlHandler(CtrlHandler, TRUE);
 
-    // Initialize Winsock
     wsaOpResult = WSAStartup(MAKEWORD(2, 2), &wsaData);
     if (wsaOpResult != 0)
     {
@@ -413,33 +417,10 @@ int main(int argc, char *argv[])
     if (listenSocket == INVALID_SOCKET)
     {
         PWError("Error creating socket port", winErrorMsgBuf);
+        WSACleanup();
         return EXIT_FAILURE;
     }
-
-    // The famous IOCP
-    completionPort = CreateIoCompletionPort(INVALID_HANDLE_VALUE, NULL, 0, 0);
-    if (completionPort == NULL)
-    {
-        PWError("Error creating IOCP", winErrorMsgBuf);
-        return EXIT_FAILURE;
-    }
-
-    gServerInfo = serverInfo = CreateServer(listenSocket);
-    serverInfo->completionPort = completionPort;
-    serverInfo->listenSocket = listenSocket;
-
-    workersCreated = CreateWorkerThreads(serverInfo);
-
-    // if no worker threads were created, exit.
-    if (!workersCreated)
-    {
-        fprintf(stderr, "Error creating all workers");
-        return EXIT_FAILURE;
-    }
-
-    printf("Created %d worker threads.\n", workersCreated);
-
-    // bind and set listening
+    
     internetAddr.sin_family = AF_INET;
     internetAddr.sin_addr.s_addr = htonl(INADDR_ANY);
     internetAddr.sin_port = htons((USHORT)serverPort);
@@ -459,13 +440,37 @@ int main(int argc, char *argv[])
     wsaOpResult = listen(listenSocket, SOMAXCONN);
     if (wsaOpResult == SOCKET_ERROR)
     {
-        PWError("Error to listen on port", winErrorMsgBuf);
+        PWError("Error listening on port", winErrorMsgBuf);
         return EXIT_FAILURE;
     }
 
-    printf("Server listening on port %d\n", serverPort);
+    // The famous IOCP
+    completionPort = CreateIoCompletionPort(INVALID_HANDLE_VALUE, NULL, 0, 0);
+    if (completionPort == NULL)
+    {
+        PWError("Error creating IOCP", winErrorMsgBuf);
+        closesocket(listenSocket);
+        WSACleanup();
+        return EXIT_FAILURE;
+    }
 
-    // Server code. Accepting connections and send (echo) receiving data.
+    gServerInfo = serverInfo = CreateServer(listenSocket);
+    serverInfo->completionPort = completionPort;
+    serverInfo->listenSocket = listenSocket;
+
+    workersCreated = CreateWorkerThreads(serverInfo);
+
+    // if no worker threads were created, exit.
+    if (!workersCreated)
+    {
+        fprintf(stderr, "Error creating all workers. Exiting.");
+        Cleanup();
+        return EXIT_FAILURE;
+    }
+
+    printf("Server listening on port %d. Workers: %d\n", serverPort, workersCreated);
+
+    // Loop for accepting connections.
     while (TRUE)
     {
         SOCKADDR_IN saRemote;
@@ -476,6 +481,7 @@ int main(int argc, char *argv[])
 
         if (acceptSocket == INVALID_SOCKET)
         {
+            PWError("Error accepting a connection attempt", winErrorMsgBuf);
             continue;
         }
 
@@ -493,31 +499,25 @@ int main(int argc, char *argv[])
         // assign IOCP to socket to receive I/O events.
         if (CreateIoCompletionPort((HANDLE)acceptSocket, completionPort, (ULONG_PTR)clientInfo, 0) == NULL)
         {
+            PWError("Error when assigning socket to IOCP", winErrorMsgBuf);
             UnregisterClient(serverInfo, clientInfo);
             continue;
         }
 
-        // It needs to do a first reading.
+        // begin reading so Workers can process the completion reads.
         DWORD wsaRecvFlags = 0;
+        DWORD ovlpOpResult;
+        DWORD wsaErrorCode;
+
         clientInfo->overlapped.eventType = EVENT_READ;
-        if (WSARecv(clientInfo->socket,
-                    &(clientInfo->wsaBuf),
-                    1,
-                    NULL,
-                    (LPDWORD)&wsaRecvFlags,
-                    (LPOVERLAPPED)&clientInfo->overlapped, NULL) == SOCKET_ERROR)
+        ovlpOpResult = WSARecv(clientInfo->socket, &(clientInfo->wsaBuf), 1, NULL,
+                               (LPDWORD)&wsaRecvFlags, (LPOVERLAPPED)&clientInfo->overlapped, NULL);
+        if (OverlappedOperationError(ovlpOpResult, &wsaErrorCode))
         {
-
-            DWORD wsaLastError = WSAGetLastError();
-            // Overlapped sockets can return SOCKET_ERROR when read or send. In this case, check if error is WSA_IO_PENDING.
-            if (wsaLastError != WSA_IO_PENDING)
-            {
-                // if starting reading fails, close connection client directly.
-                printf(LOG_FORMAT("Error starting receiving data: %s"),
-                       clientInfo->addressStr, clientInfo->port, StrWinError(wsaLastError, winErrorMsgBuf));
-
-                UnregisterClient(serverInfo, clientInfo);
-            }
+            // if starting reading fails, close connection client directly.
+            printf(LOG_FORMAT("Error starting receiving data: %s"),
+                   clientInfo->addressStr, clientInfo->port, StrWinError(wsaErrorCode, winErrorMsgBuf));
+            UnregisterClient(serverInfo, clientInfo);
         }
     }
 
