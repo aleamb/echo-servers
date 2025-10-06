@@ -52,6 +52,7 @@ class EchoClient:
     RECEIVING = 3
     RECEIVED = 4
     READY = 5
+    CLOSED = 6
     def __init__(self, id : str, p_socket, client_state : int, scheduled : float):
         self.id = id
         self.socket = p_socket
@@ -165,11 +166,6 @@ def test_echo(logger, host, port, max_messages, data_length, min_interval, max_i
         for writable_socket in writable:
             echo_client = clients[s_key(writable_socket)]
             if echo_client.state == EchoClient.READY:
-                if echo_client.messages >= max_messages:
-                    del clients[s_key(writable_socket)]
-                    writable_socket.close()
-                    outputs.remove(writable_socket)
-                    break
                 echo_client.data_to_send = bytearray(''.join([random.choice(string.ascii_uppercase) 
                                                           for i in range(0, data_length - 1)]), 'utf-8') + b'\n'
                 echo_client.bytes_to_send = len(echo_client.data_to_send)
@@ -197,9 +193,13 @@ def test_echo(logger, host, port, max_messages, data_length, min_interval, max_i
                     connect_echo_client(echo_client, host, port)
                     logger.client_log(echo_client, 'Client connected.')
                 if echo_client.state == EchoClient.READY:
-                    outputs.append(echo_client.socket)
-
-        if not clients:
+                    if echo_client.messages < max_messages:
+                        outputs.append(echo_client.socket)
+                    else:
+                        inputs.remove(echo_client.socket)
+                        echo_client.socket.close()
+                        echo_client.state = EchoClient.CLOSED
+        if not inputs:
             break
 
     print('Tests finished')
