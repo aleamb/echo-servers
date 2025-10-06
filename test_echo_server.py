@@ -167,6 +167,11 @@ def test_echo(logger, host, port, max_messages, data_length, min_interval, max_i
             echo_client = clients[s_key(writable_socket)]
             match echo_client.state:
                 case EchoClient.READY:
+                    if echo_client.messages >= max_messages:
+                        del clients[s_key(writable_socket)]
+                        writable_socket.close()
+                        outputs.remove(writable_socket)
+                        break
                     echo_client.data_to_send = bytearray(''.join([random.choice(string.ascii_uppercase) 
                                                           for i in range(0, data_length - 1)]), 'utf-8') + b'\n'
                     echo_client.bytes_to_send = len(echo_client.data_to_send)
@@ -180,6 +185,7 @@ def test_echo(logger, host, port, max_messages, data_length, min_interval, max_i
                         echo_client.state = EchoClient.SENT
                         outputs.remove(writable_socket)
                         echo_client.data_received = bytearray()
+                        echo_client.messages += 1
                         logger.client_log(echo_client, 'Client finish send data')
                     else:
                         sent = writable_socket.send(echo_client.data_to_send[echo_client.bytes_sent:])
@@ -198,6 +204,7 @@ def test_echo(logger, host, port, max_messages, data_length, min_interval, max_i
         if not clients:
             break
 
+    print('Tests finished')
 
 if __name__ == '__main__':
 
