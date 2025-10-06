@@ -30,7 +30,7 @@ test_echo_server.py is a simple utility to test echo servers. Run with Python >=
 Description of utility:
 
 ```
-usage: test_echo_server [-h] [-l LENGTH] [-i INTERVAL] [-r NUM] [-t] [-c CONCURRENCY] host port
+usage: test_echo_server [-h] [-l LENGTH] [-i INTERVAL_RANGE] [-n NUM] [-p THREADS] [-c CONNECTIONS] host port
 
 Tests echo servers sending generated variable data.
 
@@ -41,18 +41,21 @@ positional arguments:
 options:
   -h, --help            show this help message and exit
   -l LENGTH, --length LENGTH
-                        length of string to send. If value is zero, tester connect and disconnect.
-  -i INTERVAL, --interval INTERVAL
-                        interval, in miliseconds, between each send of a string. Can be zero.
-  -r NUM, --num NUM     Num messages to send
-  -t, --table           Generate table data (num_message, response time) instead prints average response time
-  -c CONCURRENCY, --concurrency CONCURRENCY
-                        Concurrent connections
+                        length of string to send.
+  -i INTERVAL_RANGE, --interval_range INTERVAL_RANGE
+                        interval range (format: [min-]<max>), in miliseconds, between each send of a string. This includes connections too. Script selects a random number between min and max
+  -n NUM, --num NUM     Num messages to send
+  -p THREADS, --threads THREADS
+                        Num. of threads
+  -c CONNECTIONS, --connections CONNECTIONS
+                        Connections by thread.
 
 Table format is:
 
-Send timestamp,finish send timestamp,timestamp of receiving response data,response time,length of data sent,length of data received,thread id,error flag (0 if no error)
+Send timestamp,finish send timestamp,timestamp of receiving response data,response time,length of data sent,length of data received,thread id,client_id,error flag (0 if no error)
 
 The error is marked when sent data and received data are not equals. Last column set to 1 if error occurs.
+
+Timestamp values are Unix Time in miliseconds. Time values are in miliseconds.
 
 ```

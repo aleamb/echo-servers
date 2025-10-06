@@ -11,7 +11,7 @@
     
     The error is marked when sent data and received data are not equals. Last column set to 1 if error occurs.
 
-    Timestamps is UTC in miliseconds. Time is in miliseconds.
+    Timestamp values are Unix Time in miliseconds. Time values are in miliseconds.
 
 """
  
@@ -43,7 +43,7 @@ program_epilog = (''
     '\n\n'
     'The error is marked when sent data and received data are not equals. Last column set to 1 if error occurs.'
     '\n\n'
-    'Timestamps is UTC in miliseconds. Time is in miliseconds.')
+    'Timestamp values are Unix Time in miliseconds. Time values are in miliseconds.')
 
 class EchoClient:
     INIT = 0
