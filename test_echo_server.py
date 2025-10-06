@@ -7,9 +7,11 @@
     In each test, it prints a row with columns:
     
     Send timestamp,finish send timestamp,timestamp of receiving response data, 
-    response time,length of data sent,length of data received,thread id,error flag (0 if no error)
+    response time,length of data sent,length of data received,thread id,client_id,error flag (0 if no error)
     
     The error is marked when sent data and received data are not equals. Last column set to 1 if error occurs.
+
+    Timestamps is UTC in miliseconds. Time is in miliseconds.
 
 """
  
@@ -21,118 +23,187 @@ import time
 import random
 import string
 import threading
+import select
+import math
+import logging
+from datetime import datetime
 
-_author__ = "Alejandro Ambroa"
+__author__ = "Alejandro Ambroa"
 __version__ = "1.0.0"
 __email__ = "jandroz@gmail.com"
 
+BUFFER_SIZE = 1024
+EXIT_FAILURE = 1
 
 program_epilog = (''
     'Table format is:'
     '\n\n'
     'Send timestamp,finish send timestamp,timestamp of receiving response data,' 
-    'response time,length of data sent,length of data received,thread id,error flag (0 if no error)'
+    'response time,length of data sent,length of data received,thread id,client_id,error flag (0 if no error)'
     '\n\n'
-    'The error is marked when sent data and received data are not equals. Last column set to 1 if error occurs.')
+    'The error is marked when sent data and received data are not equals. Last column set to 1 if error occurs.'
+    '\n\n'
+    'Timestamps is UTC in miliseconds. Time is in miliseconds.')
 
+class EchoClient:
+    INIT = 0
+    SENDING = 1
+    SENT = 2
+    RECEIVING = 3
+    RECEIVED = 4
+    READY = 5
+    def __init__(self, id : str, p_socket, client_state : int, scheduled : float):
+        self.id = id
+        self.socket = p_socket
+        self.scheduled = scheduled
+        self.state = client_state
+        self.data_to_send = None
+        self.bytes_to_send = 0
+        self.data_received = None
+        self.bytes_sent = 0
+        self.bytes_received = 0
+        self.messages = 0
+        self.send_timestamp = 0
+        pass
 
-def print_msg(msg):
-    print('%f, %s' % (time.time(), msg), file=sys.stderr)
+class EchoDebugLogger:
+    def __init__(self):
+        console_handler1 = logging.StreamHandler()
+        console_handler1.setFormatter(logging.Formatter('%(asctime)s - %(message)s'))
+        self.mainLogger = logging.getLogger(__name__)
+        self.mainLogger.addHandler(console_handler1)
 
+        console_handler2 = logging.StreamHandler()
+        console_handler2.setFormatter(logging.Formatter('%(asctime)s - id: %(id)-4s fileno: %(fileno)-4s - scheduled %(scheduled)-12s - %(message)s'))
+        self.clientLogger = logging.getLogger('client')
+        self.clientLogger.addHandler(console_handler2)
 
-def print_table_row(send_timestamp, finish_send_timestamp, current_time, response_time, data_length, data_len_received, thread_id, error):
-    print('%f,%f,%f,%f,%d,%d,%d,%i' % (send_timestamp, finish_send_timestamp, current_time, 
-                    response_time, data_length, data_len_received, thread_id, 1 if error else 0))
+    def client_log(self, client: EchoClient, msg : str):
+        self.clientLogger.debug(msg, extra=client_info_to_dict(client))
 
-def print_avg_time(thread_id, acc_time, n_msg):
-    print('Average response time from thread %d: %f ms' % (thread_id, acc_time / n_msg,))
-     
-def test_echo(host, port, max_messages, dlength, generate_table, interval):
+    def main_log(self, msg : str):
+        self.mainLogger.debug(msg)
+
+def print_table_row(send_timestamp, finish_send_timestamp, response_time, data_sent_length, data_received_length, thread_id, client_id, error):
+    print('%d,%d,%d,%d,%d,%d,%s,%i' % (send_timestamp * 1000, finish_send_timestamp * 1000, 
+                    response_time * 1000, data_sent_length, data_received_length, thread_id, client_id, 1 if error else 0))
+
+def connect_echo_client(client, host, port):
+    client.socket.connect((host, port))
+    client.socket.setblocking(0)
+    client.state = EchoClient.READY
+
+def rand_interval_range(min_interval, max_interval):
+    return random.randint(min_interval, max_interval) / 1000.0
+
+def s_key(socket):
+    return socket.fileno()
+
+def scheduled_to_str(client : EchoClient):
+    return datetime.fromtimestamp(client.scheduled).strftime("%H:%M:%S,%m")
+
+def client_info_to_dict(client : EchoClient):
+    return {
+        'id': client.id,
+        'fileno': client.socket.fileno(),
+        'scheduled': scheduled_to_str(client)
+    }
+
+def print_error(msg : str):
+    print(msg, file=sys.stderr)
+    
+def test_echo(logger, host, port, max_messages, data_length, min_interval, max_interval, sockets_by_thread):
 
     thread_id = threading.get_native_id()
-    
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
 
-        data_length = dlength + 1
-        average = 0.0
-        n_msg = 0
-        time_elapsed = 0.0
-        acc_response_time = 0.0
+    inputs = []
+    outputs = []
+    clients = {}
 
-        print_msg('Connecting to %s:%d...' % (host, port))
+    # create clients and schedule.
+    t1 = time.time()
+    schedule = t1
+    for sock_index in range(0, sockets_by_thread):
+        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        client = EchoClient(str(sock_index), s, EchoClient.INIT, schedule)
+        clients[s_key(s)] = client
+        inputs.append(s)
+        logger.client_log(client, 'Client created.')
+        schedule = t1 + rand_interval_range(min_interval, max_interval)
 
-        s.connect((args.host, args.port))
 
-        print_msg('Connected. Sending messages...')
+    while True:
+        current_time = time.time()
 
-        t2 = time.time()
-
-        error = False
-
-        while not error and n_msg < max_messages:
-            n_msg += 1
-            data_received = b''
-            retry = 0
-
-            data = bytes(''.join([random.choice(string.ascii_uppercase) 
-                for i in range(0, data_length - 1)]), 'utf-8') + b'\n'
-
-            send_timestamp = time.time()
-            s.sendall(data)
-            finish_send_timestamp = time.time()
-
-            data_completed = False
-            data_len_received = 0
-
-            t1 = time.time()
-
-            error = False
-
-            while (not data_completed):
-                retry += 1
-
-                data_from_server = s.recv(1024) #min(len(data) - data_len_received, 1024))
-
-                if not data_from_server:
-                    print_msg('Server close connection')
-                    error = True
-                    break
-
-                data_received += data_from_server
-            
-                #print("Received fragment %s" % (data_from_server,))
-                #print("Fragment size of %d bytes" % (len(data_from_server),))
-
-                data_len_received = len(data_received)
-                data_completed = (data_received == data)
-
-            current_time = time.time()
-            response_time = (current_time - t1) * 1000.0
-            acc_response_time += response_time
-
-            if generate_table:
-                print_table_row(send_timestamp, finish_send_timestamp, current_time, 
-                    response_time, data_length, data_len_received, thread_id, error)
-            else:
-                time_elapsed = (current_time - t2)
-                if time_elapsed >= 5:
-                    print_avg_time(thread_id, acc_response_time, n_msg)
-                    t2 = current_time
-                    time_elapsed = 0
-
-            # wait interval
-            sleep_time = interval - response_time
-            if sleep_time > 0:
-                time.sleep(sleep_time / 1000.0)
+        # compute how much 'select()' must wait if no reads or writes pending. 
+        min_schedule = min(clients.values(), key=lambda client: client.scheduled).scheduled
+        wait_interval = max(0,  min_schedule - current_time)
+       
+        logger.main_log('Scheduled waiting: %f seconds' % (wait_interval))
         
-        s.close()
+        readable, writable, exceptional = select.select(inputs, outputs, inputs + outputs, wait_interval)
 
-        if not generate_table:
-            print_avg_time(thread_id, acc_response_time, n_msg)
+        for readable_socket in readable:
+            echo_client = clients[s_key(readable_socket)]
+            match echo_client.state:
+                case EchoClient.SENT | EchoClient.RECEIVING:
+                    echo_client.data_received += echo_client.socket.recv(BUFFER_SIZE)
+                    logger.client_log(echo_client, 'Data received.')
+                    len_data_received = len(echo_client.data_received)
+                    if len_data_received == echo_client.bytes_sent:
+                        received_timestamp = time.time()
+                        echo_client.state = EchoClient.READY
+                        echo_client.scheduled = received_timestamp + rand_interval_range(min_interval, max_interval)
+                        logger.client_log(echo_client, 'Data complete. Message processed.')
+                        # here prints result table rows.
+                        print_table_row(echo_client.send_timestamp, received_timestamp, received_timestamp - echo_client.send_timestamp, 
+                                        echo_client.bytes_sent, len_data_received, thread_id, echo_client.id, 0)
+                    else:
+                        echo_client.state = EchoClient.RECEIVING
+                        #TODO: check read timeouts.
+                        
+                        
+        for writable_socket in writable:
+            echo_client = clients[s_key(writable_socket)]
+            match echo_client.state:
+                case EchoClient.READY:
+                    echo_client.data_to_send = bytearray(''.join([random.choice(string.ascii_uppercase) 
+                                                          for i in range(0, data_length - 1)]), 'utf-8') + b'\n'
+                    echo_client.bytes_to_send = len(echo_client.data_to_send)
+                    echo_client.send_timestamp = time.time()
+                    sent = writable_socket.send(echo_client.data_to_send)
+                    echo_client.bytes_sent = sent
+                    echo_client.state = EchoClient.SENDING # send is non-blocking.
+                    logger.client_log(echo_client, 'Client sends data')
+                case EchoClient.SENDING:
+                    if sent == echo_client.bytes_sent:
+                        echo_client.state = EchoClient.SENT
+                        outputs.remove(writable_socket)
+                        echo_client.data_received = bytearray()
+                        logger.client_log(echo_client, 'Client finish send data')
+                    else:
+                        sent = writable_socket.send(echo_client.data_to_send[echo_client.bytes_sent:])
+                        echo_client.bytes_sent += sent
+                        logger.client_log(echo_client, 'Client continues sending data')
 
-    print('Test thread %d finished' % (thread_id,))
+        # check if there is an operation that need to be executed (connect or write new message).
+        for echo_client in clients.values():
+            if echo_client.scheduled <= current_time:
+                if echo_client.state == EchoClient.INIT:
+                    connect_echo_client(echo_client, host, port)
+                    logger.client_log(echo_client, 'Client connected.')
+                if echo_client.state == EchoClient.READY:
+                    outputs.append(echo_client.socket)
+
+        if not clients:
+            break
+
 
 if __name__ == '__main__':
+
+    logging.basicConfig(level=logging.INFO, handlers=[])
+
+    logger = EchoDebugLogger()
 
     parser = argparse.ArgumentParser(
             prog='test_echo_server',
@@ -142,36 +213,57 @@ if __name__ == '__main__':
     parser.add_argument('host', type=str, help='host or ip of the  server to test', )
     parser.add_argument('port', type=int, help='port')
 
-    parser.add_argument('-l', '--length', type=int, required=False, default=64, help='length of string to send. If value is zero, tester connect and disconnect.')
-    parser.add_argument('-i', '--interval', type=float, required=False, default=1000, help='interval, in miliseconds, between each send of a string. Can be zero.')
-    parser.add_argument('-r', '--num', type=int, required=False, default=100, help='Num messages to send')
-    parser.add_argument('-t', '--table', action='store_true', default=False, help='Generate table data (num_message, response time) instead prints average response time')
-    parser.add_argument('-c', '--concurrency', type=int, required=False, default=2, help='Concurrent connections')
+    parser.add_argument('-l', '--length', type=int, required=False, default=64, help='length of string to send.')
+    parser.add_argument('-i', '--interval_range', type=str, required=False, default='0-250', 
+                        help='interval range (format: [min-]<max>), in miliseconds, between each send of a string. This includes connections too.' \
+                        ' Script selects a random number between min and max')
+    parser.add_argument('-n', '--num', type=int, required=False, default=100, help='Num messages to send')
+    parser.add_argument('-p', '--threads', type=int, required=False, default=1, help='Num. of threads')
+    parser.add_argument('-c', '--connections', type=int, required=False, default=1, help='Connections by thread.')
+   
+
     args = parser.parse_args()
 
     if args.port <= 0:
-        print('Port must be greater than 0')
-        exit(1)
+        print_error('Port must be greater than 0')
+        exit(EXIT_FAILURE)
 
     if args.length < 0:
-        print('Length of string must be a positive number')
-        exit(1)
-
-    if args.interval < 0:
-        print('Interval must be a positive number')
-        exit(1)
+        print_error('Length of string must be a positive number')
+        exit(EXIT_FAILURE)
 
     if args.num <= 0:
-        print('Num of messages must be greater than 0')
-        exit(1)
+        print_error('Num of messages must be greater than 0')
+        exit(EXIT_FAILURE)
 
-    if args.concurrency <= 0:
-        print('Concurrent connections must be greather than 0')
-        exit(1)
+    if args.threads <= 0:
+        print_error('Threads number must be greather than 0')
+        exit(EXIT_FAILURE)
 
-    for i in range(0, args.concurrency):
-        pt = threading.Thread(target=test_echo, args=(args.host, args.port, args.num, args.length, args.table, args.interval))
+    if args.connections <= 0:
+        print_error('Connections number must be greather than 0')
+        exit(EXIT_FAILURE)
+
+    min_interval = max_interval = 0
+
+    try:
+        interval_spec = args.interval_range.split('-')
+
+        if len(interval_spec) == 1:
+            min_interval = max_interval = int(interval_spec[0])
+        else:
+            max_interval = int(interval_spec[1])
+            min_interval = max_interval if not interval_spec[0] else int(interval_spec[0])
+    except:
+        print_error("Error in interval range param specification. Format is: [min-]<max>. Examples: 100-250, or 300 (which equivalent to 300-300)")
+        exit(EXIT_FAILURE)
+    
+    if min_interval > max_interval:
+        print_error('max interval must be greather or equal than min interval')
+        exit(EXIT_FAILURE)
+
+    for i in range(0, args.threads):
+        pt = threading.Thread(target=test_echo, args=(logger, args.host, args.port, args.num, 
+                                                args.length, min_interval, max_interval, args.connections))
         pt.start()
-        time.sleep(random.random() * (args.interval / 1000.0))
-
-
+    
