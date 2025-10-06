@@ -25,7 +25,7 @@ This repo contains multiple implementations of an echo-servers using differents 
 
 ## Testing
 
-test_echo_server.py is a simple utility to test echo servers. Run with Python >= 3.9.
+test_echo_server.py is a simple utility to test echo servers. Run with Python >= 3.10.
 
 Description of utility:
 
