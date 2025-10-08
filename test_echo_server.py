@@ -206,7 +206,6 @@ def test_echo(logger, host, port, max_messages, data_length, min_interval, max_i
             sent = writable_socket.send(echo_client.data_to_send[echo_client.bytes_sent:])
             echo_client.last_send_timestamp = time.time()
             echo_client.bytes_sent += sent
-            print('send')
             logger.client_log(echo_client, 'Client sends data')
 
             if echo_client.bytes_sent == echo_client.bytes_to_send:
