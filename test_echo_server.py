@@ -216,7 +216,7 @@ def test_echo(logger, host, port, max_messages, data_length, min_interval, max_i
                 logger.client_log(echo_client, 'Client finish send data')
 
 
-    print('Tests finished')
+    print('Tests completed by thread: %d' % (thread_id, ), file=sys.stderr)
 
 if __name__ == '__main__':
 
