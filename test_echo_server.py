@@ -49,10 +49,9 @@ class EchoClient:
     INIT = 0
     SENDING = 1
     SENT = 2
-    RECEIVING = 3
-    RECEIVED = 4
-    READY = 5
-    CLOSED = 6
+    READING = 3
+    READY = 4
+    CLOSED = 5
     def __init__(self, id : str, p_socket, client_state : int, scheduled : float):
         self.id = id
         self.socket = p_socket
@@ -65,6 +64,8 @@ class EchoClient:
         self.bytes_received = 0
         self.messages = 0
         self.send_timestamp = 0
+        self.last_send_timestamp = 0
+        self.compensated_timestamp = 0
         pass
 
 class EchoDebugLogger:
@@ -129,7 +130,7 @@ def test_echo(logger, host, port, max_messages, data_length, min_interval, max_i
         client = EchoClient(str(sock_index), s, EchoClient.INIT, schedule)
         clients[s_key(s)] = client
         logger.client_log(client, 'Client created.')
-        schedule = t1 + rand_interval_range(min_interval, max_interval)
+        schedule = schedule + rand_interval_range(min_interval, max_interval)
     
     wait_interval = 0
 
@@ -138,9 +139,11 @@ def test_echo(logger, host, port, max_messages, data_length, min_interval, max_i
 
         # check if there is an operation that need to be executed (connect or write new message).
         min_schedule = math.inf
+        clients_to_delete = []
         for echo_client in clients.values():
             if echo_client.state == EchoClient.READY and echo_client.messages >= max_messages:
                 inputs.remove(echo_client.socket)
+                clients_to_delete.append(s_key(echo_client.socket))
                 echo_client.socket.close()
                 echo_client.state = EchoClient.CLOSED
                 continue
@@ -156,7 +159,13 @@ def test_echo(logger, host, port, max_messages, data_length, min_interval, max_i
             if echo_client.scheduled < min_schedule:
                 min_schedule = echo_client.scheduled
 
-        if not inputs:
+            if echo_client.state in (EchoClient.SENDING, EchoClient.SENT):
+                echo_client.compensated_timestamp += (time.time() - echo_client.last_send_timestamp)
+
+        for cd in clients_to_delete:
+            del clients[cd]
+
+        if not clients:
             break
         
         next_schedule = min_schedule - current_time
@@ -166,6 +175,7 @@ def test_echo(logger, host, port, max_messages, data_length, min_interval, max_i
 
         for readable_socket in readable:
             echo_client = clients[s_key(readable_socket)]
+            echo_client.state = EchoClient.READING
             recv_data = echo_client.socket.recv(BUFFER_SIZE)
             echo_client.data_received += recv_data 
             logger.client_log(echo_client, 'Data received.')
@@ -175,7 +185,7 @@ def test_echo(logger, host, port, max_messages, data_length, min_interval, max_i
                 echo_client.scheduled = received_timestamp + rand_interval_range(min_interval, max_interval)
                 logger.client_log(echo_client, 'Data complete. Message processed.')
                 # here prints result table rows.
-                print_table_row(echo_client.send_timestamp, received_timestamp, received_timestamp - echo_client.send_timestamp, 
+                print_table_row(echo_client.send_timestamp, received_timestamp, received_timestamp - echo_client.send_timestamp - echo_client.compensated_timestamp, 
                                         echo_client.bytes_sent, len(echo_client.data_received), thread_id, echo_client.id, 0)
                 echo_client.data_received.clear()
 
@@ -187,8 +197,10 @@ def test_echo(logger, host, port, max_messages, data_length, min_interval, max_i
                 echo_client.bytes_to_send = len(echo_client.data_to_send)
                 echo_client.bytes_sent = 0
                 echo_client.send_timestamp = time.time()
-            
+                echo_client.last_send_timestamp = echo_client.compensated_timestamp = 0
+
             sent = writable_socket.send(echo_client.data_to_send[echo_client.bytes_sent:])
+            echo_client.last_send_timestamp = time.time()
             echo_client.bytes_sent += sent
             logger.client_log(echo_client, 'Client sends data')
             echo_client.state = EchoClient.SENDING
@@ -197,7 +209,6 @@ def test_echo(logger, host, port, max_messages, data_length, min_interval, max_i
                 echo_client.state = EchoClient.SENT
                 echo_client.schedule = -1
                 echo_client.messages += 1
-                echo_client.data_received = bytearray()
                 outputs.remove(echo_client.socket)
                 logger.client_log(echo_client, 'Client finish send data')
 
