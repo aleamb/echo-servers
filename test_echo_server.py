@@ -91,7 +91,7 @@ def print_table_row(send_timestamp, finish_send_timestamp, response_time, data_s
 
 def connect_echo_client(client, host, port):
     client.socket.connect((host, port))
-    #client.socket.setblocking(0)
+    client.socket.setblocking(0)
     client.state = EchoClient.READY
 
 def rand_interval_range(min_interval, max_interval):
@@ -172,13 +172,13 @@ def test_echo(logger, host, port, max_messages, data_length, min_interval, max_i
             if len(echo_client.data_received) == echo_client.bytes_to_send:
                 received_timestamp = time.time()
                 echo_client.state = EchoClient.READY
-                echo_client.data_received.clear()
                 echo_client.scheduled = received_timestamp + rand_interval_range(min_interval, max_interval)
                 logger.client_log(echo_client, 'Data complete. Message processed.')
                 # here prints result table rows.
                 print_table_row(echo_client.send_timestamp, received_timestamp, received_timestamp - echo_client.send_timestamp, 
                                         echo_client.bytes_sent, len(echo_client.data_received), thread_id, echo_client.id, 0)
-            
+                echo_client.data_received.clear()
+
         for writable_socket in writable:
             echo_client = clients[s_key(writable_socket)]
             if echo_client.state == EchoClient.READY:
@@ -186,17 +186,18 @@ def test_echo(logger, host, port, max_messages, data_length, min_interval, max_i
                                                           for i in range(0, data_length - 1)]), 'utf-8') + b'\n'
                 echo_client.bytes_to_send = len(echo_client.data_to_send)
                 echo_client.bytes_sent = 0
+                echo_client.send_timestamp = time.time()
             
             sent = writable_socket.send(echo_client.data_to_send[echo_client.bytes_sent:])
             echo_client.bytes_sent += sent
             logger.client_log(echo_client, 'Client sends data')
-            echo_client.send_timestamp = time.time()
             echo_client.state = EchoClient.SENDING
 
             if echo_client.bytes_sent == echo_client.bytes_to_send:
                 echo_client.state = EchoClient.SENT
                 echo_client.schedule = -1
                 echo_client.messages += 1
+                echo_client.data_received = bytearray()
                 outputs.remove(echo_client.socket)
                 logger.client_log(echo_client, 'Client finish send data')
 
@@ -205,7 +206,7 @@ def test_echo(logger, host, port, max_messages, data_length, min_interval, max_i
 
 if __name__ == '__main__':
 
-    logging.basicConfig(level=logging.DEBUG, handlers=[])
+    logging.basicConfig(level=logging.INFO, handlers=[])
 
     logger = EchoDebugLogger()
 
