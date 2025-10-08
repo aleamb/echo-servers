@@ -60,7 +60,7 @@ class EchoClient:
         self.state = client_state
         self.data_to_send = None
         self.bytes_to_send = 0
-        self.data_received = None
+        self.data_received = bytearray()
         self.bytes_sent = 0
         self.bytes_received = 0
         self.messages = 0
@@ -91,7 +91,7 @@ def print_table_row(send_timestamp, finish_send_timestamp, response_time, data_s
 
 def connect_echo_client(client, host, port):
     client.socket.connect((host, port))
-    client.socket.setblocking(0)
+    #client.socket.setblocking(0)
     client.state = EchoClient.READY
 
 def rand_interval_range(min_interval, max_interval):
@@ -128,39 +128,38 @@ def test_echo(logger, host, port, max_messages, data_length, min_interval, max_i
         s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         client = EchoClient(str(sock_index), s, EchoClient.INIT, schedule)
         clients[s_key(s)] = client
-        inputs.append(s)
         logger.client_log(client, 'Client created.')
         schedule = t1 + rand_interval_range(min_interval, max_interval)
-
+    
+    wait_interval = 0
 
     while True:
         current_time = time.time()
-
-        # compute how much 'select()' must wait if no reads or writes pending. 
-        min_schedule = min(clients.values(), key=lambda client: client.scheduled).scheduled
-        wait_interval = max(0,  min_schedule - current_time)
        
         logger.main_log('Scheduled waiting: %f seconds' % (wait_interval))
+
+
         
         readable, writable, exceptional = select.select(inputs, outputs, inputs + outputs, wait_interval)
 
         for readable_socket in readable:
             echo_client = clients[s_key(readable_socket)]
-            if echo_client.state in (EchoClient.SENT, EchoClient.RECEIVING):
-                echo_client.data_received += echo_client.socket.recv(BUFFER_SIZE)
-                logger.client_log(echo_client, 'Data received.')
-                len_data_received = len(echo_client.data_received)
-                if len_data_received == echo_client.bytes_sent:
-                    received_timestamp = time.time()
-                    echo_client.state = EchoClient.READY
-                    echo_client.scheduled = received_timestamp + rand_interval_range(min_interval, max_interval)
-                    logger.client_log(echo_client, 'Data complete. Message processed.')
-                    # here prints result table rows.
-                    print_table_row(echo_client.send_timestamp, received_timestamp, received_timestamp - echo_client.send_timestamp, 
-                                        echo_client.bytes_sent, len_data_received, thread_id, echo_client.id, 0)
-                else:
-                    echo_client.state = EchoClient.RECEIVING
-                    #TODO: check read timeouts.
+            #if echo_client.state in (EchoClient.SENT, EchoClient.RECEIVING):
+            recv_data = echo_client.socket.recv(BUFFER_SIZE)
+            echo_client.data_received += recv_data 
+            logger.client_log(echo_client, 'Data received.')
+            if len(echo_client.data_received) == echo_client.bytes_to_send:
+                received_timestamp = time.time()
+                echo_client.state = EchoClient.READY
+                echo_client.scheduled = received_timestamp + rand_interval_range(min_interval, max_interval)
+                echo_client.data_received.clear()
+                logger.client_log(echo_client, 'Data complete. Message processed.')
+                # here prints result table rows.
+                print_table_row(echo_client.send_timestamp, received_timestamp, received_timestamp - echo_client.send_timestamp, 
+                                        echo_client.bytes_sent, len(echo_client.data_received), thread_id, echo_client.id, 0)
+            else:
+                echo_client.state = EchoClient.RECEIVING
+                #TODO: check read timeouts.
                         
                         
         for writable_socket in writable:
@@ -169,30 +168,31 @@ def test_echo(logger, host, port, max_messages, data_length, min_interval, max_i
                 echo_client.data_to_send = bytearray(''.join([random.choice(string.ascii_uppercase) 
                                                           for i in range(0, data_length - 1)]), 'utf-8') + b'\n'
                 echo_client.bytes_to_send = len(echo_client.data_to_send)
-                echo_client.send_timestamp = time.time()
-                sent = writable_socket.send(echo_client.data_to_send)
-                echo_client.bytes_sent = sent
-                echo_client.state = EchoClient.SENDING # send is non-blocking.
-                logger.client_log(echo_client, 'Client sends data')
-            elif echo_client.state == EchoClient.SENDING:
-                if sent == echo_client.bytes_sent:
-                    echo_client.state = EchoClient.SENT
-                    outputs.remove(writable_socket)
-                    echo_client.data_received = bytearray()
-                    echo_client.messages += 1
-                    logger.client_log(echo_client, 'Client finish send data')
-                else:
-                    sent = writable_socket.send(echo_client.data_to_send[echo_client.bytes_sent:])
-                    echo_client.bytes_sent += sent
-                    logger.client_log(echo_client, 'Client continues sending data')
+                echo_client.bytes_sent = 0
+            
+            sent = writable_socket.send(echo_client.data_to_send[echo_client.bytes_sent:)
+            echo_client.bytes_sent += sent
+            logger.client_log(echo_client, 'Client sends data')
+            echo_client.send_timestamp = time.time()
+            echo_client.state = EchoClient.SENDING
+
+            if echo_client.bytes_sent == echo_client.bytes_to_send:
+                echo_client.state = EchoClient.SENT
+                outputs.remove(writable_socket)
+                echo_client.schedule = -1
+                echo_client.messages += 1
+                logger.client_log(echo_client, 'Client finish send data')
+
 
         # check if there is an operation that need to be executed (connect or write new message).
         for echo_client in clients.values():
             if echo_client.scheduled <= current_time:
                 if echo_client.state == EchoClient.INIT:
                     connect_echo_client(echo_client, host, port)
+                    inputs.append(echo_client.socket)
                     logger.client_log(echo_client, 'Client connected.')
                 if echo_client.state == EchoClient.READY:
+                    print(max_messages)
                     if echo_client.messages < max_messages:
                         outputs.append(echo_client.socket)
                     else:
@@ -206,7 +206,7 @@ def test_echo(logger, host, port, max_messages, data_length, min_interval, max_i
 
 if __name__ == '__main__':
 
-    logging.basicConfig(level=logging.INFO, handlers=[])
+    logging.basicConfig(level=logging.DEBUG, handlers=[])
 
     logger = EchoDebugLogger()
 
