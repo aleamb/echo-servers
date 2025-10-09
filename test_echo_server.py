@@ -182,14 +182,19 @@ def test_echo(logger, host, port, max_messages, data_length, min_interval, max_i
             recv_data = echo_client.socket.recv(BUFFER_SIZE)
             echo_client.data_received += recv_data 
             logger.client_log(echo_client, 'Data received.')
-            if len(echo_client.data_received) == echo_client.bytes_to_send:
+            length_data_received = len(echo_client.data_received)
+            if length_data_received == echo_client.bytes_to_send:
                 received_timestamp = time.time()
                 echo_client.state = EchoClient.READY
                 echo_client.scheduled = received_timestamp + rand_interval_range(min_interval, max_interval)
                 logger.client_log(echo_client, 'Data complete. Message processed.')
+                
                 # here prints result table rows.
-                print_table_row(echo_client.send_timestamp, received_timestamp, received_timestamp - echo_client.send_timestamp - echo_client.compensated_timestamp, 
-                                        echo_client.bytes_sent, len(echo_client.data_received), thread_id, echo_client.id, 0)
+                response_time = received_timestamp - echo_client.send_timestamp - echo_client.compensated_timestamp
+                print_table_row(echo_client.send_timestamp, received_timestamp, response_time, 
+                                echo_client.bytes_sent, length_data_received, 
+                                thread_id, echo_client.id, 
+                                echo_client.data_received != echo_client.data_to_send)
                 echo_client.data_received.clear()
 
         for writable_socket in writable:
