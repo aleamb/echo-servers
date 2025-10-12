@@ -114,6 +114,9 @@ class SelectableEngineSelect(Selectable):
     def remove_output(self, s):
         self.outputs.remove(s)
 
+    def get_fileno(s):
+        return s.fileno()
+
     def select(self, timeout):
         return select.select(self.inputs, self.outputs, self.exceptions, timeout)
     
@@ -141,7 +144,10 @@ class SelectableEnginePoll(Selectable):
     def remove_output(self, s):
         self.poller.modify(s, self.READ_ONLY)
 
-    def select(self, inputs, outputs, exceptional, timeout):
+    def get_fileno(self, s):
+        return s
+
+    def select(self, timeout):
         events = self.poller.poll(timeout)
         self.inputs.clear()
         self.outputs.clear()
@@ -182,9 +188,6 @@ def connect_echo_client(client, host, port):
 def rand_interval_range(min_interval, max_interval):
     return random.randint(min_interval, max_interval) / 1000.0
 
-def s_key(socket):
-    return socket.fileno()
-
 def scheduled_to_str(client : EchoClient):
     return datetime.fromtimestamp(client.scheduled).strftime("%H:%M:%S,%m")
 
@@ -211,7 +214,7 @@ def test_echo(logger, host, port, max_messages, data_length, min_interval, max_i
     for sock_index in range(0, sockets_by_thread):
         s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         client = EchoClient(str(sock_index), s, EchoClient.INIT, schedule)
-        clients[s_key(s)] = client
+        clients[s.fileno()] = client
         logger.client_log(client, 'Client created.')
         schedule = schedule + rand_interval_range(min_interval, max_interval)
     
@@ -223,10 +226,10 @@ def test_echo(logger, host, port, max_messages, data_length, min_interval, max_i
         # check if there is an operation that need to be executed (connect or write new message).
         min_schedule = math.inf
         clients_to_delete = []
-        for echo_client in clients.values():
+        for k, echo_client in clients.items():
             if echo_client.state == EchoClient.READY and echo_client.messages >= max_messages:
                 selectable_wrapper.remove_input(echo_client.socket)
-                clients_to_delete.append(s_key(echo_client.socket))
+                clients_to_delete.append(k)
                 echo_client.socket.close()
                 echo_client.state = EchoClient.CLOSED
             else:
@@ -259,7 +262,7 @@ def test_echo(logger, host, port, max_messages, data_length, min_interval, max_i
         readable, writable, exceptional = selectable_wrapper.select(wait_interval)
 
         for readable_socket in readable:
-            echo_client = clients[s_key(readable_socket)]
+            echo_client = clients[selectable_wrapper.get_fileno(readable_socket)]
             echo_client.state = EchoClient.READING
             recv_data = echo_client.socket.recv(BUFFER_SIZE)
             echo_client.data_received += recv_data 
@@ -280,7 +283,7 @@ def test_echo(logger, host, port, max_messages, data_length, min_interval, max_i
                 echo_client.data_received.clear()
 
         for writable_socket in writable:
-            echo_client = clients[s_key(writable_socket)]
+            echo_client = clients[selectable_wrapper.get_fileno(writable_socket)]
             if echo_client.state == EchoClient.READY:
                 echo_client.data_to_send = bytearray(''.join([random.choice(string.ascii_uppercase) 
                                                           for i in range(0, data_length - 1)]), 'utf-8') + b'\n'
@@ -290,7 +293,7 @@ def test_echo(logger, host, port, max_messages, data_length, min_interval, max_i
                 echo_client.last_send_timestamp = echo_client.compensated_timestamp = 0
                 echo_client.state = EchoClient.SENDING
             
-            sent = writable_socket.send(echo_client.data_to_send[echo_client.bytes_sent:])
+            sent = echo_client.socket.send(echo_client.data_to_send[echo_client.bytes_sent:])
             echo_client.last_send_timestamp = time.time()
             echo_client.bytes_sent += sent
             logger.client_log(echo_client, 'Client sends data')
