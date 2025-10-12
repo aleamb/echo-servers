@@ -86,6 +86,90 @@ class EchoDebugLogger:
     def main_log(self, msg : str):
         self.mainLogger.debug(msg)
 
+
+class Selectable:
+    def __init__(self):
+        self.inputs = []
+        self.outputs = []
+        self.exceptions = []
+
+class SelectableEngineSelect(Selectable):
+
+    def __init__(self):
+        Selectable.__init__(self)
+
+    def add_input(self, s):
+        self.inputs.append(s)
+
+    def add_output(self, s):
+        self.outputs.append(s)
+
+    def add_input_output(self, s):
+        self.add_input(s)
+        self.add_output(s)
+
+    def remove_input(self, s):
+        self.inputs.remove(s)
+
+    def remove_output(self, s):
+        self.outputs.remove(s)
+
+    def select(self, timeout):
+        return select.select(self.inputs, self.outputs, self.exceptions, timeout)
+    
+
+class SelectableEnginePoll(Selectable):
+    def __init__(self):
+        Selectable.__init__(self)
+        self.poller = select.poll()
+        self.READ_ONLY = (select.POLLIN | select.POLLPRI | select.POLLHUP | select.POLLERR)
+        self.WRITE_ONLY = (select.POLLOUT | select.POLLPRI | select.POLLHUP | select.POLLERR)
+        self.READ_WRITE = self.READ_ONLY | select.POLLOUT
+        
+    def add_input(self, s):
+        self.poller.register(s, self.READ_ONLY)
+
+    def add_output(self, s):
+        self.poller.register(s, self.WRITE_ONLY)
+
+    def add_input_output(self, s):
+        self.poller.register(s, self.READ_WRITE)
+
+    def remove_input(self, s):
+        self.poller.modify(s, self.WRITE_ONLY)
+
+    def remove_output(self, s):
+        self.poller.modify(s, self.READ_ONLY)
+
+    def select(self, inputs, outputs, exceptional, timeout):
+        events = self.poller.poll(timeout)
+        self.inputs.clear()
+        self.outputs.clear()
+        self.exceptions.clear()
+
+        for fd, flags in events:
+            if flags & select.POLLIN:
+                self.inputs.append(fd)
+            if flags & select.POLLOUT:
+                self.outputs.append(fd)
+            if flags & (select.POLLHUP | select.POLLERR):
+                self.exceptions.append(fd)
+
+        return (self.inputs, self.outputs, self.exceptions)
+
+class SelectableEngineFactory:
+    @staticmethod
+    def build():
+        engine = None
+        try:
+            engine = SelectableEnginePoll()
+            print("Selected poll() engine")
+        except:
+            engine = SelectableEngineSelect()
+            print("Selected select() engine")
+        return engine
+
+
 def print_table_row(send_timestamp, finish_send_timestamp, response_time, data_sent_length, data_received_length, thread_id, client_id, error):
     print('%d,%d,%d,%d,%d,%d,%s,%i' % (send_timestamp * 1000, finish_send_timestamp * 1000, 
                     response_time * 1000, data_sent_length, data_received_length, thread_id, client_id, 1 if error else 0))
@@ -118,8 +202,7 @@ def test_echo(logger, host, port, max_messages, data_length, min_interval, max_i
 
     thread_id = threading.get_native_id()
 
-    inputs = []
-    outputs = []
+    selectable_wrapper = SelectableEngineFactory.build()
     clients = {}
 
     # create clients and schedule.
@@ -142,7 +225,7 @@ def test_echo(logger, host, port, max_messages, data_length, min_interval, max_i
         clients_to_delete = []
         for echo_client in clients.values():
             if echo_client.state == EchoClient.READY and echo_client.messages >= max_messages:
-                inputs.remove(echo_client.socket)
+                selectable_wrapper.remove_input(echo_client.socket)
                 clients_to_delete.append(s_key(echo_client.socket))
                 echo_client.socket.close()
                 echo_client.state = EchoClient.CLOSED
@@ -150,11 +233,10 @@ def test_echo(logger, host, port, max_messages, data_length, min_interval, max_i
                 if echo_client.scheduled <= current_time:
                     if echo_client.state == EchoClient.INIT:
                         connect_echo_client(echo_client, host, port)
-                        inputs.append(echo_client.socket)
-                        outputs.append(echo_client.socket)
+                        selectable_wrapper.add_input_output(echo_client.socket)
                         logger.client_log(echo_client, 'Client connected.')
                     elif echo_client.state == EchoClient.READY:
-                        outputs.append(echo_client.socket)
+                        selectable_wrapper.add_output(echo_client.socket)
 
                 if echo_client.scheduled < min_schedule:
                     min_schedule = echo_client.scheduled
@@ -174,7 +256,7 @@ def test_echo(logger, host, port, max_messages, data_length, min_interval, max_i
         next_schedule = min_schedule - current_time
         wait_interval = None if next_schedule < 0 else max(0, next_schedule)
             
-        readable, writable, exceptional = select.select(inputs, outputs, inputs + outputs, wait_interval)
+        readable, writable, exceptional = selectable_wrapper.select(wait_interval)
 
         for readable_socket in readable:
             echo_client = clients[s_key(readable_socket)]
@@ -217,7 +299,7 @@ def test_echo(logger, host, port, max_messages, data_length, min_interval, max_i
                 echo_client.state = EchoClient.SENT
                 echo_client.schedule = -1
                 echo_client.messages += 1
-                outputs.remove(echo_client.socket)
+                selectable_wrapper.remove_output(echo_client.socket)
                 logger.client_log(echo_client, 'Client finish send data')
 
 
