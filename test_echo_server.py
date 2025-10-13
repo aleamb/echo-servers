@@ -169,10 +169,10 @@ class SelectableEngineFactory:
         engine = None
         try:
             engine = SelectableEnginePoll()
-            print("Selected poll() engine")
+            print("Selected poll() engine", file=sys.stderr)
         except:
             engine = SelectableEngineSelect()
-            print("Selected select() engine")
+            print("Selected select() engine", file=sys.stderr)
         return engine
 
 
@@ -304,6 +304,13 @@ def test_echo(logger, host, port, max_messages, data_length, min_interval, max_i
                 echo_client.messages += 1
                 selectable_wrapper.remove_output(echo_client.socket)
                 logger.client_log(echo_client, 'Client finish send data')
+        
+        for socket_exception in exceptional:
+            echo_client = clients[selectable_wrapper.get_fileno(socket_exception)]
+            print("Socket error in client %s" % (echo_client.id, ), file=sys.stderr)
+            print_table_row(echo_client.send_timestamp, received_timestamp, response_time, 
+                                echo_client.bytes_sent, length_data_received, 
+                                thread_id, echo_client.id, True)
 
 
     print('Tests completed by thread: %d' % (thread_id, ), file=sys.stderr)
