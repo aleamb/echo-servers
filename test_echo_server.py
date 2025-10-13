@@ -128,7 +128,7 @@ class SelectableEngineSelect(Selectable):
     def remove_output(self, s):
         self.outputs.remove(s)
 
-    def get_fileno(s):
+    def get_fileno(self, s):
         return s.fileno()
 
     def select(self, timeout):
