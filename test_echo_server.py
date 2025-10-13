@@ -13,6 +13,8 @@
 
     Timestamp values are Unix Time in miliseconds. Time values are in miliseconds.
 
+    script uses aysnc IO and an event loop.
+
 """
  
 import socket
@@ -45,7 +47,9 @@ program_epilog = (''
     '\n\n'
     'Timestamp values are Unix Time in miliseconds. Time values are in miliseconds.')
 
+
 class EchoClient:
+    # constants for state machine in roder manage connections.
     INIT = 0
     SENDING = 1
     SENT = 2
@@ -86,6 +90,16 @@ class EchoDebugLogger:
     def main_log(self, msg : str):
         self.mainLogger.debug(msg)
 
+
+"""
+
+Next classes are tiny wrappers for use select() and poll() according operating system. 
+
+This avoid select() FD_SIZE limitation (1024 descriptors) if script executes on Linux. 
+
+On Windows script will use select()
+
+"""
 
 class Selectable:
     def __init__(self):
@@ -250,15 +264,18 @@ def test_echo(logger, host, port, max_messages, data_length, min_interval, max_i
         if not clients:
             break
         
+        # this compensates execution time if previous loop does new connections.
         ct = time.time()
         for echo_client in clients.values():
             if echo_client.state in (EchoClient.SENDING, EchoClient.SENT):
                 echo_client.compensated_timestamp += (ct - current_time)
 
-
+        # schedule wait time when there are not sockets pending to connect or write.
+        # wait time will be next minor operation time.
         next_schedule = min_schedule - current_time
         wait_interval = None if next_schedule < 0 else max(0, next_schedule)
             
+        # In Windows, select(); in Linux, poll()
         readable, writable, exceptional = selectable_wrapper.select(wait_interval)
 
         for readable_socket in readable:
